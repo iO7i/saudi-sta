@@ -10,6 +10,7 @@ from app.providers import AudarMtmdAdapter, LlamaCppAdapter, LocalArtifactRegist
 from app.schemas import Recipe, RunStatus, ToolProposal
 from app.model_registry import ARTIFACT_STATES, scan_models
 from app.download_status import read_worker_status
+from tools.download_worker import queue_complete_allowed
 
 
 def test_zero_spend_policy_blocks_remote_even_if_environment_has_keys(monkeypatch):
@@ -72,6 +73,12 @@ def test_download_worker_status_distinguishes_stale_from_stopped(tmp_path):
     assert read_worker_status(status)["effective_state"] == "STALE"
     status.write_text(json.dumps({"pid": 999999, "state": "QUEUE_COMPLETE", "last_heartbeat": old}), encoding="utf-8")
     assert read_worker_status(status)["effective_state"] == "STOPPED"
+
+
+def test_download_queue_cannot_complete_with_pending_or_retryable_items():
+    assert queue_complete_allowed(["INTEGRITY_VERIFIED", "BLOCKED_ACCESS", "FAILED_RETRY_EXHAUSTED"])
+    assert not queue_complete_allowed(["INTEGRITY_VERIFIED", "RETRY_PENDING"])
+    assert not queue_complete_allowed(["INTEGRITY_VERIFIED", "QUEUED"])
 
 
 def test_direct_and_two_stage_recipes_record_different_real_stage_counts():
