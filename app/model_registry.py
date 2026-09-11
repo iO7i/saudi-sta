@@ -39,7 +39,7 @@ PLANNED_MODELS: list[dict[str, Any]] = [
             _artifact("Audar-ASR-V1-Turbo-Q4_K_M.gguf", bytes_=1282434912, sha256="c55e3c28225ef6e9b56906a6463af62d34ed417803c45f3b7b20f463af2e8cf4"),
             _artifact("mmproj-Audar-ASR-V1-Turbo.gguf", bytes_=641773856, sha256="190459e806938175711779847eb62ea609cd78b8d2ec06fb96a94d69ab37a9be"),
         ], "verified_capabilities": [], "unverified_claims": ["Arabic transcription", "Gulf dialects", "code-switching"],
-        "evidence_notes": "Q4 local bridge; NOT_REFERENCE_PRECISION; no leaderboard parity claim.",
+        "runtime_certified": True, "capability_certified": True, "evidence_notes": "Q4 local bridge; NOT_REFERENCE_PRECISION; no leaderboard parity claim.",
     },
     {
         "id": "AUDAR_TURBO_Q8_LOCAL", "family": "Audar-ASR-V1-Turbo", "stage": ["transcribe"],
@@ -47,33 +47,41 @@ PLANNED_MODELS: list[dict[str, Any]] = [
         "precision": "Q8_0", "runtime": "llama.cpp mtmd", "local_or_hosted": "LOCAL",
         "license_id": "audarai-community-license-v1.0", "license_source": "https://www.audarai.com/license/audarai-community-license-v1.0/",
         "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0,
-        "artifact_root": "audar/Audar-ASR-V1-Turbo", "artifacts": [_artifact("Audar-ASR-V1-Turbo-Q8_0.gguf")],
-        "shared_artifacts": ["mmproj-Audar-ASR-V1-Turbo.gguf"], "verified_capabilities": [], "unverified_claims": ["Arabic transcription"],
-        "evidence_notes": "Future distinct Q8 candidate; may reuse the verified BF16 projector when contract-compatible.",
+        "artifact_root": "audar/Audar-ASR-V1-Turbo", "decoder_filename": "Audar-ASR-V1-Turbo-Q8_0.gguf", "artifacts": [
+            _artifact("Audar-ASR-V1-Turbo-Q8_0.gguf", bytes_=2165034848, sha256="0a91ab40f6a30db06c4186e2f621f504f4625ba6058e639cc09f1cbefded10d2"),
+            _artifact("mmproj-Audar-ASR-V1-Turbo.gguf", bytes_=641773856, sha256="190459e806938175711779847eb62ea609cd78b8d2ec06fb96a94d69ab37a9be"),
+        ], "verified_capabilities": ["transcribe"], "unverified_claims": ["Arabic transcription"],
+        "runtime_certified": True, "capability_certified": True, "evidence_notes": "Distinct Q8 candidate; shares the verified BF16 projector. Runtime-certified against the same local audio in Slice 02.",
     },
     {
         "id": "AUDAR_FLASH_Q8_LOCAL", "family": "Audar-ASR-V1-Flash", "stage": ["transcribe"],
-        "source_repository": "audarai/Audar-ASR-V1-Flash", "revision": None, "precision": "Q8_0", "runtime": "llama.cpp mtmd", "local_or_hosted": "LOCAL",
+        "source_repository": "audarai/Audar-ASR-V1-Flash", "revision": "54274d39245beba38f30048128e231d4176bd91d", "precision": "Q8_0", "runtime": "llama.cpp mtmd", "local_or_hosted": "LOCAL",
         "license_id": "audarai-open-license-v1.0", "license_source": "https://www.audarai.com/license/audarai-open-license-v1.0/",
         "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0,
-        "artifact_root": "audar/Audar-ASR-V1-Flash", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["Arabic transcription", "realtime transcription"],
-        "evidence_notes": "Planned; exact pinned files are recorded by the download worker when resolved.",
+        "artifact_root": "audar/Audar-ASR-V1-Flash", "decoder_filename": "Audar-ASR-V1-Flash-Q8_0.gguf", "artifacts": [
+            _artifact("Audar-ASR-V1-Flash-Q8_0.gguf", bytes_=639442784, sha256="1b01c707fcf162ef8e844a89f0833bd0d005933342e0c37fa8da164497a9fb38"),
+            _artifact("mmproj-Audar-ASR-V1-Flash.gguf", bytes_=378575424, sha256="73f06fc82a009b4a9d6c825782a3676cb553402b3a5ecc27ae77a92caa6b7fa9"),
+        ], "verified_capabilities": ["transcribe"], "unverified_claims": ["realtime transcription"],
+        "runtime_certified": True, "capability_certified": True, "evidence_notes": "Runtime-certified against the same local audio in Slice 02; no speed generalization from one utterance.",
     },
     {
         "id": "WHISPER_LARGE_V3", "family": "Whisper Large v3", "stage": ["transcribe"], "source_repository": "openai/whisper-large-v3", "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1", "precision": "FP32", "runtime": "Transformers CPU", "local_or_hosted": "LOCAL",
         "license_id": "Apache-2.0", "license_source": "https://huggingface.co/openai/whisper-large-v3", "commercial_status": "PERMISSIVE", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0,
-        "artifact_root": "whisper/whisper-large-v3", "artifacts": [], "verified_capabilities": ["transcribe"], "unverified_claims": [], "evidence_notes": "Existing independently verified Slice 02 model; external manifest supplies artifact hashes.",
+        "artifact_root": "whisper/whisper-large-v3", "artifacts": [
+            _artifact("model.fp32-00001-of-00002.safetensors", bytes_=4993448880, sha256="08e0005225b3dbaf55dd13ac62926cc7e02c1025d66fa375e6fb305ff79cd4f9"),
+            _artifact("model.fp32-00002-of-00002.safetensors", bytes_=1180663192, sha256="630ca774672856d2e0e39a702e590f635a1cfc5726a64b6578ab46dd367369a9"),
+        ], "verified_capabilities": ["transcribe"], "runtime_certified": True, "capability_certified": True, "unverified_claims": [], "evidence_notes": "Existing independently verified Slice 02 model; exact artifact hashes recorded.",
     },
     {
         "id": "COHERE_TRANSCRIBE_ARABIC_07_2026", "family": "Cohere Transcribe Arabic 07-2026", "stage": ["transcribe"], "source_repository": "CohereLabs/cohere-transcribe-arabic-07-2026", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_ASR", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "https://huggingface.co/CohereLabs/cohere-transcribe-arabic-07-2026", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "cohere/Transcribe-Arabic-07-2026", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["Arabic transcription"], "evidence_notes": "Planned; not installed."},
     {
         "id": "OMNIASR_LLM_7B", "family": "Meta omniASR-LLM-7B", "stage": ["transcribe"], "source_repository": "facebook/omniASR-LLM-7B", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_ASR", "local_or_hosted": "LOCAL", "license_id": "Apache-2.0", "license_source": "https://huggingface.co/facebook/omniASR-LLM-7B", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "meta/omniASR-LLM-7B", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["multilingual transcription"], "evidence_notes": "Planned; license identifier requires local card verification before use."},
     {
-        "id": "FIRERED_VAD", "family": "FireRedVAD", "stage": ["vad"], "source_repository": "FireRedTeam/FireRedVAD", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_VAD", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "firered/FireRedVAD", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["voice activity detection"], "evidence_notes": "Planned; runtime installation is separate."},
+        "id": "FIRERED_VAD", "family": "FireRedVAD", "stage": ["vad"], "source_repository": "FireRedTeam/FireRedVAD", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_VAD", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "firered/FireRedVAD", "artifacts": [_artifact("VAD/model.pth.tar", bytes_=2368049, sha256="63f4fb1b00a6b8607c118dd48efc18d5e40d67d99b7bf9aa7a8d61540cf23d71"), _artifact("Stream-VAD/model.pth.tar", bytes_=2283513, sha256="ec88a8ae8ac5f004cdbd20c1eac4a9e9d12067c3d51ac5b141afa1f921fb59c9"), _artifact("AED/model.pth.tar", bytes_=2370097, sha256="ad08a4e05b58ca328154e158d24cff57a2fe796ceabb63bb701544c3f7d4f7ad")], "verified_capabilities": [], "unverified_claims": ["voice activity detection"], "evidence_notes": "Weights integrity verified; runtime/capability certification remains pending and no simulated VAD output is exposed."},
     {
-        "id": "AUDAR_DIARIZATION_V1", "family": "Audar-Diarization-V1", "stage": ["diarization"], "source_repository": "audarai/Audar-Diarization-V1", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_DIARIZATION", "local_or_hosted": "LOCAL", "license_id": "audarai-community-license-v1.0", "license_source": "https://www.audarai.com/license/audarai-community-license-v1.0/", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "audar/Audar-Diarization-V1", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["speaker diarization"], "evidence_notes": "Planned; not installed."},
+        "id": "AUDAR_DIARIZATION_V1", "family": "Audar-Diarization-V1", "stage": ["diarization"], "source_repository": "audarai/Audar-Diarization-V1", "revision": "230e5afed3f87637c12c8fb819dd0be9b1ddf6cb", "precision": "BF16", "runtime": "SPECIALIST_DIARIZATION", "local_or_hosted": "LOCAL", "license_id": "audarai-community-license-v1.0", "license_source": "https://www.audarai.com/license/audarai-community-license-v1.0/", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "audar/Audar-Diarization-V1", "artifacts": [_artifact("model.safetensors", bytes_=471103752, sha256="86444dd50d63cad3875ef3aab679ebc842466511c49753f9869b8e4ad5395cba")], "verified_capabilities": [], "unverified_claims": ["speaker diarization"], "evidence_notes": "Artifact integrity verified; runtime/capability certification remains pending."},
     {
-        "id": "LIVEKIT_TURN_DETECTOR_V1_MINI", "family": "LiveKit Turn Detector v1-mini", "stage": ["turn_detection"], "source_repository": "LiveKit turn detector distribution", "revision": None, "precision": "UNKNOWN", "runtime": "SPECIALIST_TURN_DETECTOR", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "livekit/turn-detector-v1-mini", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["audio turn detection"], "evidence_notes": "Distribution method requires main-agent runtime review; no fabricated weight URL."},
+        "id": "LIVEKIT_TURN_DETECTOR_V1_MINI", "family": "LiveKit Turn Detector v1-mini", "stage": ["turn_detection"], "source_repository": "livekit/turn-detector", "revision": "fba34c38ad5d30a63ebb83a9e6bf271cf4c91d67", "precision": "INT8_ONNX", "runtime": "ONNX Runtime CPU", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "https://huggingface.co/livekit/turn-detector", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "livekit/turn-detector-v1-mini", "artifacts": [_artifact("model_quantized.onnx", bytes_=165035487, sha256="4e685767c3643b0363c9f826a98325683f29e9c7d550162c8e8740ba33aa31aa")], "verified_capabilities": [], "unverified_claims": ["audio turn detection"], "evidence_notes": "Pinned artifact and SHA-256 resolved from the existing download manifest; ONNX load is separately probed, but completed/pause/continuation capability remains pending until the tokenizer/protocol bundle is present."},
     {
         "id": "QWEN3_8_27B_Q6_K_L", "family": "Qwen3.8-27B", "stage": ["summarize", "actionize", "function_call"], "source_repository": "Qwen/Qwen3.8-27B (GGUF conversion)", "revision": None, "precision": "Q6_K_L", "runtime": "llama.cpp", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "qwen/Qwen3.8-27B-Q6_K_L", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["multilingual tools", "structured output"], "evidence_notes": "Planned conversion; lineage and license must be captured before download."},
     {
@@ -141,7 +149,10 @@ def scan_models(roots: list[Path] | None = None) -> list[dict[str, Any]]:
             state = "ARTIFACT_PRESENT"
         else:
             state = "NOT_INSTALLED"
-        result.update({"artifact_state": state, "artifact_path": str(model_dir), "artifacts": artifacts, "runtime_certified": False, "capability_certified": False, "auto_activation": False})
+        result.update({"artifact_state": state, "artifact_path": str(model_dir), "artifacts": artifacts,
+                       "runtime_certified": bool(plan.get("runtime_certified", False) and state == "INTEGRITY_VERIFIED"),
+                       "capability_certified": bool(plan.get("capability_certified", False) and state == "INTEGRITY_VERIFIED"),
+                       "runtime_state": "RUNTIME_LOAD_VERIFIED" if plan.get("runtime_certified") and state == "INTEGRITY_VERIFIED" else "RUNTIME_PENDING",
+                       "auto_activation": False})
         scanned.append(result)
     return scanned
-

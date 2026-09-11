@@ -7,6 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Role(str, Enum):
+    VAD = "vad"
+    TURN_DETECTION = "turn_detection"
+    DIARIZATION = "diarization"
     TRANSCRIBE = "transcribe"
     SUMMARIZE = "summarize"
     ACTIONIZE = "actionize"
@@ -179,6 +182,15 @@ class TournamentStart(BaseModel):
     total_call_cap: int = Field(default=72, ge=1, le=240)
     quality_floor: float = Field(default=0.70, ge=0, le=1)
     confirmed: bool = False
+
+
+class STTTournamentStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recording_id: str
+    mode: Literal["Cost", "Speed", "Performance", "Manual"] = "Performance"
+    binding_ids: list[str] = Field(default_factory=list, max_length=8)
+    manual_binding_id: str | None = None
 
 
 class ReviewUpdate(BaseModel):

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from .schemas import Recipe, RunStatus, SemanticPlan, SourceSpan, SummaryResult, ToolProposal
+from .schemas import Recipe, Role, RunStatus, SemanticPlan, SourceSpan, SummaryResult, ToolProposal
 
 
 TOOL_SCHEMAS: dict[str, dict[str, type]] = {
@@ -94,7 +94,7 @@ class DemoRules:
             evidence_type=self.evidence_type,
         )
 
-    def actionize(self, text: str, reference_timestamp: str) -> SemanticPlan:
+    def _interpret(self, text: str, reference_timestamp: str) -> SemanticPlan:
         lowered = text.lower()
         correction_words = []
         if re.search(r"(?:لا[،,]?\s*(?:خليها|خلها)|بدل|مو)", lowered):
@@ -173,6 +173,9 @@ class DemoRules:
             supporting_spans=[span_for(text)], evidence_type=self.evidence_type,
         )
 
+    def actionize(self, text: str, reference_timestamp: str) -> SemanticPlan:
+        return self._interpret(text, reference_timestamp)
+
     def function_call(self, text: str, plan: SemanticPlan, source_revision: int) -> ToolProposal:
         proposal_id = str(uuid.uuid4())
         span = plan.supporting_spans
@@ -216,8 +219,10 @@ class DemoRules:
         )
 
     def direct_function_call(self, text: str, reference_timestamp: str, source_revision: int) -> ToolProposal:
-        # Direct route intentionally records one function-call stage, not a hidden actionize invocation.
-        return self.function_call(text, self.actionize(text, reference_timestamp), source_revision)
+        # The direct route interprets the source inside the function-call
+        # operation.  It must not invoke the separately measured actionize
+        # stage, because direct-vs-staged comparisons depend on that boundary.
+        return self.function_call(text, self._interpret(text, reference_timestamp), source_revision)
 
 
 def validate_tool_proposal(proposal: ToolProposal) -> None:
@@ -236,6 +241,12 @@ def validate_tool_proposal(proposal: ToolProposal) -> None:
         raise ValueError("INVALID_LIST_ITEMS")
     if proposal.tool_name == "create_reminder_draft" and actual["meridiem"] not in {"AM", "PM"}:
         raise ValueError("INVALID_MERIDIEM")
+    if proposal.tool_name == "revise_draft":
+        allowed = {"title", "body", "due_date", "hour", "meridiem", "list_name", "items"}
+        if not actual["patch"] or not set(actual["patch"]).issubset(allowed):
+            raise ValueError("INVALID_DRAFT_PATCH")
+        if "meridiem" in actual["patch"] and actual["patch"]["meridiem"] not in {"AM", "PM"}:
+            raise ValueError("INVALID_MERIDIEM")
 
 
 def apply_to_sandbox(state: dict[str, Any], proposal: ToolProposal) -> tuple[dict[str, Any], str]:
@@ -253,7 +264,16 @@ def apply_to_sandbox(state: dict[str, Any], proposal: ToolProposal) -> tuple[dic
     elif proposal.tool_name == "add_list_items":
         state.setdefault("lists", {}).setdefault(args["list_name"], []).extend(args["items"])
     elif proposal.tool_name in {"revise_draft", "cancel_draft"}:
-        raise ValueError("DRAFT_IDENTIFIERS_NOT_IMPLEMENTED_IN_THIS_SLICE")
+        draft_id = args["draft_id"]
+        drafts = state.setdefault("notes", []) + state.setdefault("reminders", [])
+        draft = next((item for item in drafts if item.get("proposal_id") == draft_id), None)
+        if draft is None:
+            raise ValueError("DRAFT_NOT_FOUND")
+        if proposal.tool_name == "revise_draft":
+            draft.update(args["patch"])
+            draft["status"] = "DRAFT"
+        else:
+            draft["status"] = "CANCELLED"
     else:
         raise ValueError("PROPOSAL_NOT_APPLICABLE")
     applied.append(proposal.id)
@@ -275,14 +295,23 @@ class Engine:
         self._runtime_metrics: list[dict[str, Any]] = []
 
     def validate_recipe(self, recipe: Recipe) -> None:
-        required = {"function_call"}
-        if recipe.summary_branch:
-            required.add("summarize")
-        if recipe.action_mode == "TWO_STAGE":
-            required.add("actionize")
-        missing = required - set(recipe.bindings)
-        if missing:
-            raise ValueError(f"RECIPE_MISSING_BINDINGS:{','.join(sorted(missing))}")
+        graph = list(recipe.graph)
+        if len(graph) != len(set(graph)):
+            raise ValueError("DUPLICATE_PIPELINE_STAGE")
+        graph_set = set(graph)
+        if recipe.summary_branch != ("summarize" in graph_set):
+            raise ValueError("SUMMARY_BRANCH_GRAPH_MISMATCH")
+        expected_action_stage = "actionize" in graph_set
+        if recipe.action_mode == "TWO_STAGE" and not expected_action_stage:
+            raise ValueError("TWO_STAGE_REQUIRES_ACTIONIZE_GRAPH_STAGE")
+        if recipe.action_mode == "DIRECT" and expected_action_stage:
+            raise ValueError("DIRECT_ROUTE_MUST_BYPASS_ACTIONIZE")
+        missing_graph = graph_set - set(recipe.bindings)
+        if missing_graph:
+            raise ValueError(f"GRAPH_MISSING_BINDINGS:{','.join(sorted(missing_graph))}")
+        unknown_bindings = set(recipe.bindings) - set(Role.value for Role in Role)
+        if unknown_bindings:
+            raise ValueError(f"UNKNOWN_RECIPE_BINDING:{','.join(sorted(unknown_bindings))}")
         for role, binding in recipe.bindings.items():
             if binding.role.value != role:
                 raise ValueError(f"ROLE_BINDING_MISMATCH:{role}")
@@ -292,12 +321,12 @@ class Engine:
                 raise ValueError(f"INVALID_DEMO_BINDING:{role}")
             if binding.execution_mode.value == "LOCAL":
                 valid_local_text = binding.provider in {"ollama_local", "llama_cpp_local"} and binding.capability_provenance.value == "VERIFIED_LOCAL"
-                valid_local_speech = role == "transcribe" and binding.provider in {"faster_whisper_local", "transformers_whisper_local"} and binding.capability_provenance.value == "VERIFIED_LOCAL"
+                valid_local_speech = role == "transcribe" and binding.provider in {"faster_whisper_local", "transformers_whisper_local", "audar_mtmd_local"} and binding.capability_provenance.value == "VERIFIED_LOCAL"
                 if not (valid_local_text or valid_local_speech):
                     raise ValueError(f"NO_VERIFIED_LOCAL_BINDING:{role}")
             elif binding.execution_mode.value != "DEMO_RULES":
                 raise ValueError(f"NO_ELIGIBLE_BINDING:{role}")
-        if recipe.bindings["function_call"].execution_mode.value == "DEMO_RULES" and recipe.bindings["function_call"].tool_mode != "JSON_EMULATION":
+        if "function_call" in graph_set and recipe.bindings["function_call"].execution_mode.value == "DEMO_RULES" and recipe.bindings["function_call"].tool_mode != "JSON_EMULATION":
             raise ValueError("DEMO_RULES_ONLY_SUPPORTS_JSON_EMULATION")
 
     def _local_json(self, binding: Any, prompt: str) -> dict[str, Any]:
@@ -353,7 +382,7 @@ class Engine:
             raise ValueError("UNAVAILABLE_LOCAL_MODEL: local adapter was not configured")
         raw = adapter.invoke(
             binding,
-            [{"role": "system", "content": "Return one JSON object only. Produce a safe typed local sandbox proposal; never send a message or perform an external action. Allowed tools: create_note_draft(title,body), create_reminder_draft(title,due_date,hour,meridiem), add_list_items(list_name,items), request_clarification(question,missing_fields). Object keys: status, tool_name, arguments. Use NEEDS_CLARIFICATION and request_clarification for unresolved references or relative times without a defined interpretation. Honour explicit negation and corrections."}, {"role": "user", "content": json.dumps({"source_text": text, "semantic_plan": plan.model_dump(mode="json") if plan else None, "reference_timestamp": reference_timestamp}, ensure_ascii=False)}],
+            [{"role": "system", "content": "Return one JSON object only. Produce a safe typed local sandbox proposal; never send a message or perform an external action. Allowed tools: create_note_draft(title,body), create_reminder_draft(title,due_date,hour,meridiem), add_list_items(list_name,items), revise_draft(draft_id,patch), cancel_draft(draft_id), request_clarification(question,missing_fields). Object keys: status, tool_name, arguments. Use NEEDS_CLARIFICATION and request_clarification for unresolved references or relative times without a defined interpretation. Honour explicit negation and corrections."}, {"role": "user", "content": json.dumps({"source_text": text, "semantic_plan": plan.model_dump(mode="json") if plan else None, "reference_timestamp": reference_timestamp}, ensure_ascii=False)}],
             json_schema={"type": "object"},
             tools=[{"type": "function", "function": {"name": name, "description": "Local sandbox operation", "parameters": {"type": "object"}}} for name in TOOL_SCHEMAS],
         )
@@ -378,6 +407,8 @@ class Engine:
         self._runtime_metrics = []
         stage_durations: dict[str, float] = {}
         calls: dict[str, int] = {}
+        graph = list(recipe.graph)
+        graph_set = set(graph)
         execution_evidence = sorted({binding.execution_mode.value for binding in recipe.bindings.values()})
         outputs: dict[str, Any] = {
             "recipe_id": recipe.id,
@@ -393,8 +424,25 @@ class Engine:
             "calibrated_correctness": None,
             "native_confidence": None,
             "stale": False,
+            "route": {
+                "graph": graph,
+                "bypassed_stages": [stage for stage in ("vad", "turn_detection", "diarization", "transcribe", "summarize", "actionize", "function_call", "verify", "synthesize") if stage not in graph_set],
+                "stage_evidence": [],
+            },
         }
-        if recipe.summary_branch:
+        for stage in graph:
+            binding = recipe.bindings[stage]
+            outputs["route"]["stage_evidence"].append({
+                "stage": stage,
+                "state": "INPUT_PROVIDED" if stage == "transcribe" else "READY_TO_EXECUTE",
+                "binding_id": binding.id,
+                "provider": binding.provider,
+                "model_id": binding.model_id,
+                "revision_or_digest": binding.revision_or_digest,
+                "execution_mode": binding.execution_mode.value,
+                "capability_provenance": binding.capability_provenance.value,
+            })
+        if "summarize" in graph_set:
             started = time.perf_counter()
             summary = self._summarize(recipe.bindings["summarize"], text)
             stage_durations["summarize"] = (time.perf_counter() - started) * 1000
@@ -402,22 +450,34 @@ class Engine:
             outputs["summary"] = summary.model_dump(mode="json")
         else:
             outputs["summary"] = None
-        if recipe.action_mode == "TWO_STAGE":
+        plan: SemanticPlan | None = None
+        if "actionize" in graph_set:
             started = time.perf_counter()
             plan = self._actionize(recipe.bindings["actionize"], text, reference_timestamp)
             stage_durations["actionize"] = (time.perf_counter() - started) * 1000
             calls["actionize"] = 1
             outputs["semantic_plan"] = plan.model_dump(mode="json")
+        elif "function_call" in graph_set:
+            outputs["semantic_plan"] = None
+        if "function_call" in graph_set:
             started = time.perf_counter()
             proposal = self._function_call(recipe.bindings["function_call"], text, plan, reference_timestamp, source_revision)
+            stage_durations["function_call"] = (time.perf_counter() - started) * 1000
+            calls["function_call"] = 1
+            validate_tool_proposal(proposal)
+            outputs["proposal"] = proposal.model_dump(mode="json")
         else:
-            started = time.perf_counter()
-            proposal = self._function_call(recipe.bindings["function_call"], text, None, reference_timestamp, source_revision)
-            outputs["semantic_plan"] = None
-        stage_durations["function_call"] = (time.perf_counter() - started) * 1000
-        calls["function_call"] = 1
-        validate_tool_proposal(proposal)
-        outputs["proposal"] = proposal.model_dump(mode="json")
+            outputs["proposal"] = None
+            outputs["semantic_plan"] = outputs.get("semantic_plan")
+        for evidence in outputs["route"]["stage_evidence"]:
+            stage = evidence["stage"]
+            if stage in calls:
+                evidence["state"] = "EXECUTED"
+                evidence["duration_ms"] = stage_durations.get(stage)
+            elif stage == "transcribe":
+                evidence["state"] = "INPUT_PROVIDED"
+            else:
+                evidence["state"] = "UNIMPLEMENTED"
         outputs["stage_durations_ms"] = stage_durations
         outputs["actual_invocation_counts"] = calls
         outputs["resource_measurements"] = self._runtime_metrics

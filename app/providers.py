@@ -5,7 +5,9 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -179,7 +181,7 @@ class OllamaAdapter:
             self.checks.append({"check": "artifact", "model": name, "result": "verified locally"})
         return result
 
-    def invoke(self, binding: RoleBinding, messages: list[dict[str, str]], *, json_schema: dict[str, Any], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def invoke(self, binding: RoleBinding, messages: list[dict[str, str]], *, json_schema: dict[str, Any], tools: list[dict[str, Any]] | None = None, timeout_seconds: float | None = None) -> dict[str, Any]:
         assert_dispatch_allowed(self.provider, self.base_url)
         if binding.provider != self.provider or binding.capability_provenance != CapabilityProvenance.VERIFIED_LOCAL:
             raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: binding is not a verified local artifact")
@@ -366,10 +368,26 @@ class TransformersWhisperAdapter:
         samples, sampling_rate = self._decode_audio(audio_path)
         started = time.perf_counter()
         try:
-            result = self._pipeline(
-                {"array": samples, "sampling_rate": sampling_rate},
-                generate_kwargs={"language": "arabic", "task": "transcribe"}, return_timestamps=True,
-            )
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+            def run_pipeline() -> dict[str, Any]:
+                return self._pipeline(
+                    {"array": samples, "sampling_rate": sampling_rate},
+                    generate_kwargs={"language": "arabic", "task": "transcribe"}, return_timestamps=True,
+                )
+
+            timeout_seconds = float(entry.get("timeout_seconds", 120))
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="saudi-sta-whisper")
+            future = executor.submit(run_pipeline)
+            try:
+                result = future.result(timeout=timeout_seconds)
+            except TimeoutError as exc:
+                future.cancel()
+                raise LocalModelUnavailable("LOCAL_WHISPER_TIMEOUT") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+        except LocalModelUnavailable:
+            raise
         except Exception as exc:
             raise LocalModelUnavailable(f"LOCAL_WHISPER_INFERENCE_FAILED:{type(exc).__name__}") from exc
         segments = []
@@ -405,11 +423,31 @@ class AudarMtmdAdapter:
         self.registry = registry
         self._loaded_key: str | None = None
 
+    def _entries(self) -> list[dict[str, Any]]:
+        return [entry for entry in self.registry.entries() if entry.get("provider") == self.provider]
+
     def _entry(self, binding: RoleBinding | None = None) -> dict[str, Any] | None:
-        entries = [entry for entry in self.registry.entries() if entry.get("provider") == self.provider]
+        entries = self._entries()
         if binding:
             return self.registry.entry(binding.model_id, self.provider)
         return entries[0] if entries else None
+
+    @staticmethod
+    def _decoder_artifact(entry: dict[str, Any]) -> Path | None:
+        declared = entry.get("decoder_filename")
+        artifacts = entry.get("artifacts", [])
+        if declared:
+            for item in artifacts:
+                path = Path(str(item.get("path", "")))
+                if path.name == str(declared):
+                    return path
+        return next((Path(str(item.get("path", ""))) for item in artifacts
+                     if str(item.get("path", "")).lower().endswith(".gguf") and "mmproj" not in str(item.get("path", "")).lower()), None)
+
+    @staticmethod
+    def _projector_artifact(entry: dict[str, Any]) -> Path | None:
+        return next((Path(str(item.get("path", ""))) for item in entry.get("artifacts", [])
+                     if "mmproj" in str(item.get("path", "")).lower()), None)
 
     def status(self, binding: RoleBinding | None = None) -> dict[str, Any]:
         entry = self._entry(binding)
@@ -427,11 +465,32 @@ class AudarMtmdAdapter:
         if not entry:
             return RoleBinding(id=f"{self.provider}:transcribe:v1", provider=self.provider, model_id="no-audar-manifest", role=Role.TRANSCRIBE, prompt_version="audar-ar-v1", schema_version="sta-v2", execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.UNKNOWN, available=False, unavailable_reason=status["reason"])
         artifacts = entry.get("artifacts", [])
-        decoder_hash = next((item.get("sha256") for item in artifacts if "Q4_K_M" in str(item.get("path"))), "unknown")
+        decoder = self._decoder_artifact(entry)
+        decoder_hash = next((item.get("sha256") for item in artifacts if decoder and Path(str(item.get("path"))).name == decoder.name), "unknown")
         return RoleBinding(
             id=f"{self.provider}:{entry.get('id', 'AUDAR_TURBO_Q4_LOCAL_BRIDGE')}:transcribe", provider=self.provider,
             model_id=str(entry.get("id", "AUDAR_TURBO_Q4_LOCAL_BRIDGE")), revision_or_digest=f"{entry.get('revision', 'unknown')};{decoder_hash}", role=Role.TRANSCRIBE,
             prompt_version="audar-ar-v1", schema_version="sta-v2", generation={"temperature": 0, "max_tokens": 512, "runtime": "llama.cpp mtmd", "precision": entry.get("precision", "Q4_K_M")},
+            execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
+            capabilities=["transcribe", "arabic", "code_switching"] if status["available"] else [], available=status["available"], unavailable_reason=status["reason"], tool_mode="NONE",
+        )
+
+    def discover(self) -> list[RoleBinding]:
+        """Return one independently selectable binding for every verified Audar entry."""
+        return [self._binding_for(entry) for entry in self._entries()]
+
+    def _binding_for(self, entry: dict[str, Any]) -> RoleBinding:
+        placeholder = RoleBinding(id="placeholder", provider=self.provider, model_id=str(entry.get("id")), role=Role.TRANSCRIBE,
+                                  prompt_version="", schema_version="", execution_mode=ExecutionMode.LOCAL,
+                                  capability_provenance=CapabilityProvenance.UNKNOWN)
+        status = self.status(placeholder)
+        artifacts = entry.get("artifacts", [])
+        decoder = self._decoder_artifact(entry)
+        decoder_hash = next((item.get("sha256") for item in artifacts if decoder and Path(str(item.get("path"))).name == decoder.name), "unknown")
+        return RoleBinding(
+            id=f"{self.provider}:{entry.get('id', 'unknown')}:transcribe", provider=self.provider,
+            model_id=str(entry.get("id", "unknown")), revision_or_digest=f"{entry.get('revision', 'unknown')};{decoder_hash}", role=Role.TRANSCRIBE,
+            prompt_version="audar-ar-v1", schema_version="sta-v2", generation={"temperature": 0, "max_tokens": 512, "runtime": "llama.cpp mtmd", "precision": entry.get("precision")},
             execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
             capabilities=["transcribe", "arabic", "code_switching"] if status["available"] else [], available=status["available"], unavailable_reason=status["reason"], tool_mode="NONE",
         )
@@ -443,7 +502,10 @@ class AudarMtmdAdapter:
         # timestamps or confidence fields.
         lines = [line.strip() for line in stdout.splitlines() if line.strip()]
         clean = [line for line in lines if not line.startswith(("llama_", "main:", "load_", "ggml_", "system_info", "sampling"))]
-        return (clean[-1] if clean else "").strip()
+        text = (clean[-1] if clean else "").strip()
+        # Audar Flash prefixes the completion with a native language marker.
+        text = re.sub(r"^language\s+[A-Za-z-]+\s*<asr_text>\s*", "", text, flags=re.IGNORECASE)
+        return text.strip()
 
     def transcribe(self, binding: RoleBinding, audio_path: Path) -> dict[str, Any]:
         status = self.status(binding)
@@ -452,20 +514,27 @@ class AudarMtmdAdapter:
         assert_dispatch_allowed(self.provider, artifact_verified=True)
         entry = self._entry(binding)
         assert entry is not None
-        decoder = next((Path(str(item["path"])) for item in entry.get("artifacts", []) if "Q4_K_M" in str(item.get("path"))), None)
-        projector = next((Path(str(item["path"])) for item in entry.get("artifacts", []) if "mmproj" in str(item.get("path"))), None)
+        decoder = self._decoder_artifact(entry)
+        projector = self._projector_artifact(entry)
         if not decoder or not projector or not audio_path.is_file():
             raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: Audar decoder, BF16 projector, and audio are required")
         command = [str(entry["runtime_path"]), "-m", str(decoder), "--mmproj", str(projector), "--audio", str(audio_path), "-sys", "فرّغ الكلام العربي التالي.", "--temp", "0", "-n", str(entry.get("max_tokens", 512))]
         started = time.perf_counter()
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
+                                   env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=float(entry.get("timeout_seconds", 180)), check=False, shell=False, env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+            raw, _stderr = process.communicate(timeout=float(entry.get("timeout_seconds", 180)))
+            return_code = process.returncode
         except subprocess.TimeoutExpired as exc:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+            else:
+                process.kill()
+            process.communicate()
             raise LocalModelUnavailable("LOCAL_AUDAR_TIMEOUT") from exc
         elapsed = (time.perf_counter() - started) * 1000
-        if completed.returncode != 0:
-            raise LocalModelUnavailable(f"LOCAL_AUDAR_INFERENCE_FAILED:exit={completed.returncode}")
-        raw = completed.stdout
+        if return_code != 0:
+            raise LocalModelUnavailable(f"LOCAL_AUDAR_INFERENCE_FAILED:exit={return_code}")
         return {
             "text": self._text_from_cli(raw), "segments": [], "language": None, "no_speech_probability": None,
             "raw_output": raw, "runtime": "llama.cpp mtmd", "latency_ms": elapsed, "model_load_ms": None, "cold_start": None,
@@ -544,7 +613,73 @@ class LlamaCppAdapter:
             self._model, self._loaded_key = None, None
             raise LocalModelUnavailable(f"LOCAL_GGUF_LOAD_FAILED:{type(exc).__name__}") from exc
 
-    def invoke(self, binding: RoleBinding, messages: list[dict[str, str]], *, json_schema: dict[str, Any], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def load(self, binding: RoleBinding) -> dict[str, Any]:
+        """Load exactly the verified binding and return load evidence."""
+        status = self.status(binding)
+        if not status["available"]:
+            raise LocalModelUnavailable(status["reason"])
+        assert_dispatch_allowed(self.provider, artifact_verified=True)
+        entry = self._entry(binding)
+        assert entry is not None
+        cold_start = self._load(entry)
+        return {"loaded": True, "cold_start": cold_start, "model_load_ms": self._load_ms, "model_id": binding.model_id, "revision_or_digest": binding.revision_or_digest}
+
+    def unload(self) -> None:
+        """Release the in-process model so the next call has an explicit cold start."""
+        self._model, self._loaded_key, self._load_ms = None, None, None
+
+    @staticmethod
+    def _run_with_controls(call: Any, *, timeout_seconds: float | None, cancel_event: threading.Event | None) -> Any:
+        if cancel_event and cancel_event.is_set():
+            raise LocalModelUnavailable("LOCAL_GGUF_CANCELLED")
+        if timeout_seconds is None and cancel_event is None:
+            return call()
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="saudi-sta-llama")
+        future = executor.submit(call)
+        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        try:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    raise LocalModelUnavailable("LOCAL_GGUF_CANCELLED")
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                if remaining == 0.0:
+                    raise LocalModelUnavailable("LOCAL_GGUF_TIMEOUT")
+                try:
+                    return future.result(timeout=min(0.1, remaining) if remaining is not None else 0.1)
+                except TimeoutError:
+                    continue
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _metrics(self, binding: RoleBinding, status: dict[str, Any], *, cold_start: bool, elapsed: float, usage: dict[str, Any], request_type: str, context: dict[str, Any] | None) -> dict[str, Any]:
+        completion_tokens = usage.get("completion_tokens")
+        return {
+            "runtime": "llama-cpp-python", "execution_mode": "cpu", "request_type": request_type,
+            "cold_start": cold_start, "model_load_ms": self._load_ms if cold_start else 0.0,
+            "inference_latency_ms": elapsed, "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": completion_tokens,
+            "tokens_per_second": (completion_tokens / (elapsed / 1000)) if isinstance(completion_tokens, int) and elapsed else None,
+            "artifact_bytes": sum(item["bytes"] for item in status.get("artifacts", [])),
+            "peak_ram_or_vram": None, "context": context or {},
+            "context_window": binding.generation.get("context_window"),
+            "reasoning": binding.generation.get("reasoning") or binding.generation.get("reasoning_effort"),
+            "model_id": binding.model_id, "revision_or_digest": binding.revision_or_digest,
+            "schema_version": binding.schema_version, "prompt_version": binding.prompt_version,
+        }
+
+    def invoke(
+        self,
+        binding: RoleBinding,
+        messages: list[dict[str, str]],
+        *,
+        json_schema: dict[str, Any],
+        tools: list[dict[str, Any]] | None = None,
+        timeout_seconds: float | None = None,
+        cancel_event: threading.Event | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         status = self.status(binding)
         if not status["available"]:
             raise LocalModelUnavailable(status["reason"])
@@ -554,26 +689,72 @@ class LlamaCppAdapter:
         cold_start = self._load(entry)
         started = time.perf_counter()
         try:
-            response = self._model.create_chat_completion(
-                messages=messages, temperature=0, max_tokens=int(binding.generation.get("max_tokens", 500)),
-                response_format={"type": "json_object"},
-            )
+            request: dict[str, Any] = {
+                "messages": messages, "temperature": float(binding.generation.get("temperature", 0)),
+                "max_tokens": int(binding.generation.get("max_tokens", 500)),
+            }
+            if binding.tool_mode == "NATIVE" and tools:
+                request["tools"] = tools
+                request["tool_choice"] = "auto"
+            else:
+                # JSON emulation is explicit and retained as a different mode
+                # from native tool calls; the model is still schema-constrained
+                # where the selected llama.cpp build supports it.
+                request["response_format"] = {"type": "json_object", "schema": json_schema}
+            reasoning_format = binding.generation.get("reasoning_format")
+            if reasoning_format:
+                try:
+                    if "reasoning_format" in inspect.signature(self._model.create_chat_completion).parameters:
+                        request["reasoning_format"] = reasoning_format
+                except (TypeError, ValueError):
+                    pass
+            response = self._run_with_controls(lambda: self._model.create_chat_completion(**request), timeout_seconds=timeout_seconds, cancel_event=cancel_event)
             content = response["choices"][0]["message"].get("content") or ""
+            tool_calls = response["choices"][0]["message"].get("tool_calls", []) or []
             usage = response.get("usage", {})
+        except LocalModelUnavailable:
+            raise
         except Exception as exc:
             raise LocalModelUnavailable(f"LOCAL_GGUF_INFERENCE_FAILED:{type(exc).__name__}") from exc
         elapsed = (time.perf_counter() - started) * 1000
-        completion_tokens = usage.get("completion_tokens")
         return {
-            "content": content, "tool_calls": [],
-            "runtime_metrics": {
-                "runtime": "llama-cpp-python", "execution_mode": "cpu", "cold_start": cold_start, "model_load_ms": self._load_ms if cold_start else 0.0,
-                "inference_latency_ms": elapsed, "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": completion_tokens,
-                "tokens_per_second": (completion_tokens / (elapsed / 1000)) if isinstance(completion_tokens, int) and elapsed else None,
-                "artifact_bytes": sum(item["bytes"] for item in status.get("artifacts", [])),
-                "peak_ram_or_vram": None,
-            },
+            "content": content, "tool_calls": tool_calls,
+            "runtime_metrics": self._metrics(binding, status, cold_start=cold_start, elapsed=elapsed, usage=usage, request_type="chat_completion", context=context),
+        }
+
+    def complete(
+        self,
+        binding: RoleBinding,
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+        cancel_event: threading.Event | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Raw completion surface for runtimes that do not use chat templates."""
+        status = self.status(binding)
+        if not status["available"]:
+            raise LocalModelUnavailable(status["reason"])
+        assert_dispatch_allowed(self.provider, artifact_verified=True)
+        entry = self._entry(binding)
+        assert entry is not None
+        cold_start = self._load(entry)
+        started = time.perf_counter()
+        try:
+            response = self._run_with_controls(
+                lambda: self._model.create_completion(prompt=prompt, temperature=float(binding.generation.get("temperature", 0)), max_tokens=int(max_tokens or binding.generation.get("max_tokens", 500))),
+                timeout_seconds=timeout_seconds, cancel_event=cancel_event,
+            )
+        except LocalModelUnavailable:
+            raise
+        except Exception as exc:
+            raise LocalModelUnavailable(f"LOCAL_GGUF_COMPLETION_FAILED:{type(exc).__name__}") from exc
+        elapsed = (time.perf_counter() - started) * 1000
+        usage = response.get("usage", {})
+        return {
+            "content": response.get("choices", [{}])[0].get("text", ""),
+            "runtime_metrics": self._metrics(binding, status, cold_start=cold_start, elapsed=elapsed, usage=usage, request_type="completion", context=context),
         }
 
 
@@ -583,7 +764,7 @@ def provider_matrix(ollama: OllamaAdapter, faster_speech: FasterWhisperAdapter, 
         {"provider": "Ollama", "roles": ["summarize", "actionize", "function_call"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "checks": ollama.checks, "sources": [OFFICIAL_SOURCES["ollama_tags"], OFFICIAL_SOURCES["ollama_chat"], OFFICIAL_SOURCES["ollama_locality"]]},
         {"provider": "faster-whisper", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_EXISTING_LOCAL_RUNTIME", "status": faster_speech.status(), "sources": [OFFICIAL_SOURCES["faster_whisper"]]},
         {"provider": "Transformers Whisper", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": whisper.status(), "sources": ["https://huggingface.co/openai/whisper-large-v3"]},
-        {"provider": "Audar Turbo Q4 local bridge", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": audar.status(), "evidence": "REAL_LOCAL_MODEL; NOT_REFERENCE_PRECISION", "sources": ["https://huggingface.co/audarai/Audar-ASR-V1-Turbo"]},
+        {"provider": "Audar local mtmd candidates", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "bindings": [binding.model_dump(mode="json") for binding in audar.discover()], "evidence": "REAL_LOCAL_MODEL; Q4 is NOT_REFERENCE_PRECISION", "sources": ["https://huggingface.co/audarai/Audar-ASR-V1-Turbo", "https://huggingface.co/audarai/Audar-ASR-V1-Flash"]},
         {"provider": "llama.cpp", "roles": ["summarize", "actionize", "function_call"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": text.status(), "sources": ["https://github.com/abetlen/llama-cpp-python"]},
         {"provider": "HUMAIN Voice", "roles": ["transcribe", "synthesize"], "state": "DISABLED_ZERO_SPEND_LOCAL", "preferred_provider": True, "currently_executable_provider": False, "sources": [OFFICIAL_SOURCES["humain_voice"]]},
         {"provider": "OpenAI", "roles": ["transcribe", "summarize", "actionize", "function_call"], "state": "DISABLED_ZERO_SPEND_LOCAL", "sources": [OFFICIAL_SOURCES["openai_function_calling"], OFFICIAL_SOURCES["openai_audio"]]},

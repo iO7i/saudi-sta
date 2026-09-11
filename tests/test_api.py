@@ -90,6 +90,27 @@ def test_download_worker_status_is_external_and_read_only():
     assert response.json().get("effective_state") in {"ACTIVE", "STALE", "STOPPED", "FAILED", "DOWNLOADING", "STARTING", "QUEUED"}
 
 
+def test_seed_scenario_queue_is_prompt_only_and_catalog_keeps_audar_precisions_distinct():
+    scenarios = client.get("/api/seed-scenarios")
+    assert scenarios.status_code == 200
+    payload = scenarios.json()
+    assert payload["evidence_type"] == "SCENARIO_PROMPT_ONLY" and payload["count"] >= 30
+    catalog = client.get("/api/catalog").json()["bindings"]
+    audar = [binding for binding in catalog if binding["provider"] == "audar_mtmd_local"]
+    assert {binding["model_id"] for binding in audar} >= {"AUDAR_TURBO_Q4_LOCAL_BRIDGE", "AUDAR_TURBO_Q8_LOCAL", "AUDAR_FLASH_Q8_LOCAL"}
+
+
+def test_catalog_exposes_passive_optional_stage_evidence_and_qwen_waiting_state():
+    catalog = client.get("/api/catalog")
+    assert catalog.status_code == 200
+    stages = {item["stage"]: item for item in catalog.json()["stage_capabilities"]["stages"]}
+    assert set(stages) == {"vad", "turn_detection", "diarization"}
+    assert all(item["capability_state"] == "CAPABILITY_PENDING" for item in stages.values())
+    qwen = client.get("/api/qwen-certification")
+    assert qwen.status_code == 200
+    assert qwen.json()["status"] == "WAITING_FOR_QWEN_ARTIFACT"
+
+
 def test_seed_human_case_is_explicit_and_separate_from_smoke_fixtures():
     uploaded = client.post("/api/recordings", files={"file": ("seed.wav", wav_bytes(), "audio/wav")})
     assert uploaded.status_code == 200

@@ -1,5 +1,5 @@
 (() => {
-  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, locale: "ar", recordingId: null, recorder: null, chunks: [] };
+  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, locale: "ar", recordingId: null, recorder: null, chunks: [], stageCapabilities: [] };
   const $ = (id) => document.getElementById(id);
   const roles = { transcribe: "bindingTranscribe", summarize: "bindingSummarize", actionize: "bindingActionize", function_call: "bindingFunction" };
 
@@ -66,6 +66,7 @@
     $("recipeName").value = recipe.name;
     $("twoStage").checked = recipe.action_mode === "TWO_STAGE";
     $("summaryBranch").checked = recipe.summary_branch;
+    $("stageGraph").textContent = (recipe.graph || []).join(" → ");
     Object.entries(roles).forEach(([role, id]) => {
       const binding = recipe.bindings[role];
       if (binding && [...$(id).options].some((option) => option.value === binding.id)) $(id).value = binding.id;
@@ -82,7 +83,7 @@
 
   async function loadInitial() {
     const [catalog, recipes, sandbox] = await Promise.all([api("/api/catalog"), api("/api/recipes"), api("/api/sandbox")]);
-    state.catalog = catalog.bindings; state.recipes = recipes;
+    state.catalog = catalog.bindings; state.stageCapabilities = catalog.stage_capabilities?.stages || []; state.recipes = recipes;
     populateBindings(); populateRecipes(); renderSandbox(sandbox);
     const hasLocal = state.catalog.some((binding) => binding.execution_mode === "LOCAL" && binding.available);
     $("runtimeStatus").className = "status " + (hasLocal ? "green" : "amber");
@@ -102,8 +103,9 @@
     const recipe = {
       id: `local_recipe_${Date.now()}`, name: $("recipeName").value.trim() || "Untitled local recipe", version: "1",
       bindings, action_mode: actionMode, summary_branch: $("summaryBranch").checked, locked_roles: locks,
-      required_outputs: $("summaryBranch").checked ? ["summary", "proposal"] : ["proposal"], created_by: "local-user"
+      required_outputs: $("summaryBranch").checked ? ["summary", "proposal"] : ["proposal"], graph: [...(transcribe?.available ? ["transcribe"] : []), ...($("summaryBranch").checked ? ["summarize"] : []), ...(actionMode === "TWO_STAGE" ? ["actionize"] : []), "function_call"], created_by: "local-user"
     };
+    $("stageGraph").textContent = recipe.graph.join(" → ");
     const saved = await api("/api/recipes", { method: "POST", body: JSON.stringify(recipe) });
     state.recipes.push(saved.recipe); $("recipeSelect").value = saved.recipe.id; populateRecipes(); $("recipeSelect").value = saved.recipe.id;
     toast(label("تم حفظ الوصفة المحلية.", "Local recipe saved."));
@@ -129,7 +131,8 @@
     if (outputs.summary) output.append(stageNode(label("الملخص", "Summary"), outputs.summary, outputs.stage_durations_ms?.summarize));
     if (outputs.semantic_plan) output.append(stageNode(label("الخطة الدلالية", "Semantic plan"), outputs.semantic_plan, outputs.stage_durations_ms?.actionize));
     if (outputs.proposal) output.append(stageNode(label("اقتراح الدالة", "Function proposal"), outputs.proposal, outputs.stage_durations_ms?.function_call));
-    if (!outputs.summary && !outputs.proposal && !outputs.transcription) output.textContent = label("لا توجد مخرجات بعد.", "No outputs yet.");
+    if (outputs.route) output.append(stageNode(label("دليل مسار المراحل", "Stage-route evidence"), outputs.route));
+    if (!outputs.summary && !outputs.proposal && !outputs.transcription && !outputs.route) output.textContent = label("لا توجد مخرجات بعد.", "No outputs yet.");
     const proposal = outputs.proposal;
     $("applyProposal").disabled = !(proposal && proposal.status === "READY" && !outputs.stale);
   }
@@ -282,6 +285,43 @@
     $("seedCasesOutput").textContent = pretty({ dataset_id: seed.dataset_id, evidence_type: seed.evidence_type, case_count: seed.case_count, target_case_count: seed.target_case_count, cases: seed.cases.map((entry) => ({ id: entry.id, recording_id: entry.recording_id, reviewed_transcript: entry.reviewed_transcript, expected: entry.expected, provenance: entry.provenance })) });
   }
 
+  async function refreshSeedScenarios() {
+    const payload = await api("/api/seed-scenarios");
+    const target = $("scenarioQueue"); target.replaceChildren();
+    payload.scenarios.forEach((scenario, index) => {
+      const button = document.createElement("button"); button.type = "button"; button.className = "secondary";
+      button.textContent = `${index + 1}. ${scenario.intent}`; button.title = `${scenario.example} · ${scenario.facts.join(", ")}`;
+      button.onclick = () => { $("seedPrompt").textContent = `${scenario.intent}: ${scenario.example || "Speak naturally; no fixed script."}`; $("seedTranscript").value = ""; };
+      target.append(button);
+    });
+  }
+
+  function renderSttCompare(report) {
+    const target = $("sttCompareOutput"); target.replaceChildren();
+    const note = document.createElement("p"); note.textContent = `${report.selection?.outcome || "—"} · ${report.evidence_type} · dataset: ${report.human_reference ? "SEED_HUMAN_EVAL" : "UNREVIEWED_LOCAL_RECORDING"} · remote calls: ${report.remote_calls}`; target.append(note);
+    const columns = ["Human reference", ...report.candidates.map((candidate) => candidate.model_id)];
+    const table = document.createElement("table"); const head = document.createElement("tr");
+    ["Evidence", ...columns].forEach((text) => { const cell = document.createElement("th"); cell.textContent = text; head.append(cell); });
+    const thead = document.createElement("thead"); thead.append(head); table.append(thead);
+    const rows = [
+      ["Transcript", report.human_reference || "—", ...report.candidates.map((candidate) => candidate.transcript || candidate.error || "—")],
+      ["WER", "—", ...report.candidates.map((candidate) => candidate.wer == null ? "—" : candidate.wer.toFixed(3))],
+      ["CER", "—", ...report.candidates.map((candidate) => candidate.cer == null ? "—" : candidate.cer.toFixed(3))],
+      ["Latency", "—", ...report.candidates.map((candidate) => candidate.latency_ms == null ? "—" : `${candidate.latency_ms.toFixed(1)} ms`)],
+      ["Speech errors", "human-labelled", ...report.candidates.map((candidate) => (candidate.speech_errors || []).join(", ") || "—")],
+      ["Status", "authoritative only when entered", ...report.candidates.map((candidate) => candidate.status)],
+    ];
+    const body = document.createElement("tbody");
+    rows.forEach((values) => { const row = document.createElement("tr"); values.forEach((value) => { const cell = document.createElement("td"); cell.textContent = String(value); row.append(cell); }); body.append(row); });
+    table.append(body); target.append(table);
+    const aggregate = document.createElement("pre"); aggregate.className = "small mono"; aggregate.textContent = pretty({ aggregates: report.aggregates, disagreement: report.disagreement }); target.append(aggregate);
+  }
+
+  async function compareRecording() {
+    if (!state.recordingId) throw new Error("Record or upload an audio clip in Workbench first.");
+    renderSttCompare(await api(`/api/recordings/${state.recordingId}/stt-compare`));
+  }
+
   async function refreshModels() {
     const payload = await api("/api/models");
     const target = $("modelsOutput"); target.replaceChildren();
@@ -292,6 +332,13 @@
     const body = document.createElement("tbody");
     payload.models.forEach((model) => { const tr = document.createElement("tr"); [model.id, (model.stage || []).join(", "), model.precision || "UNKNOWN", model.artifact_state, model.runtime, `${model.license_id || "UNKNOWN"} · commercial ${model.commercial_status || "UNKNOWN"}`].forEach((value) => { const td = document.createElement("td"); td.textContent = value == null ? "—" : String(value); tr.append(td); }); body.append(tr); });
     table.append(body); target.append(table);
+    const capTarget = $("capabilitiesOutput"); capTarget.replaceChildren();
+    const capTable = document.createElement("table"); const capHead = document.createElement("tr");
+    ["Stage", "Artifact", "Runtime", "Capability", "Reason"].forEach((value) => { const cell = document.createElement("th"); cell.textContent = value; capHead.append(cell); });
+    const capBody = document.createElement("tbody");
+    state.stageCapabilities.forEach((item) => { const tr = document.createElement("tr"); [item.stage, item.artifact_state, item.runtime_state, item.capability_state, item.reason || "—"].forEach((value) => { const td = document.createElement("td"); td.textContent = String(value); tr.append(td); }); capBody.append(tr); });
+    capTable.append(capHead, capBody); capTarget.append(capTable);
+    const qwen = await api("/api/qwen-certification"); const qwenNote = document.createElement("p"); qwenNote.className = "small mono"; qwenNote.textContent = `Qwen certification: ${qwen.status} · roles: ${(qwen.roles || []).join(", ")} · cases: ${(qwen.cases || []).length}`; capTarget.append(qwenNote);
   }
 
   async function saveSeedCase() {
@@ -324,11 +371,13 @@
     $("recordButton").onclick = () => toggleRecord();
     document.querySelectorAll("[data-seed-prompt]").forEach((button) => button.onclick = () => { $("seedPrompt").textContent = button.dataset.seedPrompt; $("seedTranscript").value = button.dataset.seedPrompt; });
     $("saveSeedCase").onclick = () => saveSeedCase().catch((error) => toast(error.message));
+    $("compareRecording").onclick = () => compareRecording().catch((error) => toast(error.message));
+    $("refreshSeedScenarios").onclick = () => refreshSeedScenarios().catch((error) => toast(error.message));
     $("refreshSeedCases").onclick = () => refreshSeedCases().catch((error) => toast(error.message));
     $("refreshRecords").onclick = () => refreshRecords().catch((error) => toast(error.message));
     $("refreshModels").onclick = () => refreshModels().catch((error) => toast(error.message));
     $("manifestButton").onclick = () => api("/api/training-manifest").then((manifest) => { $("manifestOutput").textContent = pretty(manifest); }).catch((error) => toast(error.message));
   }
 
-  bindEvents(); setLocale("ar"); loadInitial().catch((error) => toast(error.message));
+  bindEvents(); setLocale("ar"); loadInitial().then(() => refreshSeedScenarios()).catch((error) => toast(error.message));
 })();

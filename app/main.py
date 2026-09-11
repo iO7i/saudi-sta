@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import os
+import uuid
 import wave
 from pathlib import Path
 from typing import Any
@@ -14,12 +15,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .engine import Engine, apply_to_sandbox
+from .capability_certification import capability_bindings, stage_capability_report
 from .download_status import read_worker_status
 from .policy import PolicyViolation, allowed_browser_host, allowed_origin
 from .providers import AudarMtmdAdapter, FasterWhisperAdapter, LlamaCppAdapter, LocalArtifactRegistry, LocalModelUnavailable, OllamaAdapter, TransformersWhisperAdapter, provider_matrix
+from .qwen_certification import qwen_certification_plan
 from .model_registry import configured_roots, scan_models
-from .schemas import ApplyRequest, Recipe, ReviewUpdate, Role, RoleBinding, RunRequest, RunStatus, SeedHumanCaseCreate, ToolProposal, TournamentStart, TranscriptEdit
+from .schemas import ApplyRequest, Recipe, ReviewUpdate, Role, RoleBinding, RunRequest, RunStatus, SeedHumanCaseCreate, STTTournamentStart, ToolProposal, TournamentStart, TranscriptEdit
 from .store import Store
+from .stt_tournament import run_stt_tournament
+from .seed_scenarios import SEED_SCENARIOS
 from .tournament import TournamentManager
 
 
@@ -49,11 +54,11 @@ def default_recipes() -> list[Recipe]:
     return [
         Recipe(
             id="demo_direct_v1", name="Demo Rules · direct function proposal", action_mode="DIRECT", summary_branch=True,
-            graph=["function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
+            graph=["summarize", "function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
         ),
         Recipe(
             id="demo_two_stage_v1", name="Demo Rules · semantic plan then proposal", action_mode="TWO_STAGE", summary_branch=True,
-            graph=["actionize", "function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "actionize": demo_binding(Role.ACTIONIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
+            graph=["summarize", "actionize", "function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "actionize": demo_binding(Role.ACTIONIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
         ),
     ]
 
@@ -97,7 +102,8 @@ def local_default_recipes() -> list[Recipe]:
 
 
 for default_recipe in default_recipes():
-    if not store.get_recipe(default_recipe.id):
+    existing_default = store.get_recipe(default_recipe.id)
+    if not existing_default or existing_default.get("graph") != default_recipe.graph:
         store.save_recipe(default_recipe.model_dump(mode="json"))
 
 
@@ -109,7 +115,8 @@ def ensure_local_default_recipes() -> None:
 
 def current_bindings() -> list[RoleBinding]:
     # No automatic discovery during startup. A configured local endpoint is queried only when this catalog is requested.
-    return [demo_binding(role) for role in (Role.SUMMARIZE, Role.ACTIONIZE, Role.FUNCTION_CALL)] + [speech.binding(), audar_speech.binding(), faster_speech.binding()] + local_text.discover() + ollama.discover()
+    audar_bindings = audar_speech.discover() or [audar_speech.binding()]
+    return [demo_binding(role) for role in (Role.SUMMARIZE, Role.ACTIONIZE, Role.FUNCTION_CALL)] + [speech.binding()] + audar_bindings + [faster_speech.binding()] + local_text.discover() + ollama.discover() + capability_bindings()
 
 
 def catalog_by_id() -> dict[str, RoleBinding]:
@@ -165,6 +172,7 @@ def catalog() -> dict[str, Any]:
         "execution_policy": "ZERO_SPEND_LOCAL",
         "bindings": bindings,
         "reserved_roles": [role.value for role in (Role.ACOUSTIC_REPAIR, Role.SEMANTIC_REPAIR, Role.VERIFY, Role.RESPOND, Role.SYNTHESIZE)],
+        "stage_capabilities": stage_capability_report(),
         "provider_matrix": provider_matrix(ollama, faster_speech, speech, audar_speech, local_text),
         "locality_checks": ollama.checks,
     }
@@ -174,6 +182,12 @@ def catalog() -> dict[str, Any]:
 def models() -> dict[str, Any]:
     """Passive model-lab inventory; arrival never activates a route."""
     return {"model_root": [str(root) for root in configured_roots()], "auto_activation": False, "models": scan_models()}
+
+
+@app.get("/api/qwen-certification")
+def qwen_certification() -> dict[str, Any]:
+    binding = next((item for item in current_bindings() if item.model_id in {"QWEN38_27B_Q6_K_L", "QWEN3_8_27B_Q6_K_L"}), None)
+    return qwen_certification_plan(binding)
 
 
 @app.get("/api/recipes")
@@ -332,7 +346,8 @@ async def upload_recording(file: UploadFile = File(...), duration_seconds: float
     if effective_duration <= 0 or effective_duration > MAX_AUDIO_SECONDS:
         raise HTTPException(413, "AUDIO_DURATION_LIMIT_EXCEEDED: maximum is 300 seconds")
     recording_id, filename = store.save_audio(payload, SUPPORTED_AUDIO[mime_type], mime_type, effective_duration)
-    return {"recording_id": recording_id, "filename": filename, "duration_seconds": effective_duration, "duration_source": "WAV_SERVER_VERIFIED" if verified_duration is not None else "RECORDER_REPORTED", "asr_status": "UNAVAILABLE_LOCAL_MODEL" if not speech.status()["available"] else "LOCAL_SPEECH_AVAILABLE"}
+    speech_available = speech.status()["available"] or any(binding.available for binding in audar_speech.discover())
+    return {"recording_id": recording_id, "filename": filename, "duration_seconds": effective_duration, "duration_source": "WAV_SERVER_VERIFIED" if verified_duration is not None else "RECORDER_REPORTED", "asr_status": "LOCAL_SPEECH_AVAILABLE" if speech_available else "UNAVAILABLE_LOCAL_MODEL"}
 
 
 @app.get("/api/recordings/{recording_id}")
@@ -355,6 +370,11 @@ def list_seed_human_eval() -> dict[str, Any]:
     }
 
 
+@app.get("/api/seed-scenarios")
+def list_seed_scenarios() -> dict[str, Any]:
+    return {"dataset_id": "SEED_HUMAN_EVAL", "evidence_type": "SCENARIO_PROMPT_ONLY", "count": len(SEED_SCENARIOS), "scenarios": SEED_SCENARIOS}
+
+
 @app.post("/api/seed-human-eval")
 def add_seed_human_eval(body: SeedHumanCaseCreate) -> dict[str, Any]:
     if not store.recording(body.recording_id):
@@ -375,6 +395,45 @@ def add_seed_human_eval(body: SeedHumanCaseCreate) -> dict[str, Any]:
             raise HTTPException(409, "RECORDING_ALREADY_HAS_SEED_HUMAN_LABEL") from exc
         raise
     return {"status": "SAVED", "case": case}
+
+
+def _stt_bindings(binding_ids: list[str]) -> list[RoleBinding]:
+    bindings = [binding for binding in current_bindings() if binding.role == Role.TRANSCRIBE and binding.provider in {"transformers_whisper_local", "audar_mtmd_local", "faster_whisper_local"}]
+    if binding_ids:
+        bindings = [binding for binding in bindings if binding.id in binding_ids]
+    return bindings
+
+
+def _stt_runner(binding: RoleBinding, audio_path: Path) -> dict[str, Any]:
+    if binding.provider == "audar_mtmd_local":
+        return audar_speech.transcribe(binding, audio_path)
+    if binding.provider == "transformers_whisper_local":
+        return speech.transcribe(binding, audio_path)
+    return faster_speech.transcribe(audio_path)
+
+
+def _run_stt_comparison(body: STTTournamentStart) -> dict[str, Any]:
+    path = store.recording_path(body.recording_id)
+    if not path:
+        raise HTTPException(404, "RECORDING_NOT_FOUND")
+    bindings = _stt_bindings(body.binding_ids)
+    if not bindings:
+        raise HTTPException(422, "NO_TRANSCRIBE_BINDINGS_AVAILABLE")
+    human_reference = next((case["reviewed_transcript"] for case in store.list_seed_human_cases() if case["recording_id"] == body.recording_id), None)
+    report = run_stt_tournament(path, bindings, _stt_runner, human_reference=human_reference, mode=body.mode, manual_binding_id=body.manual_binding_id)
+    report.update({"id": str(uuid.uuid4()), "recording_id": body.recording_id, "status": "COMPLETED", "dataset_id": "SEED_HUMAN_EVAL" if human_reference else "UNREVIEWED_LOCAL_RECORDING"})
+    store.save_tournament(report)
+    return report
+
+
+@app.post("/api/stt-tournaments/start")
+def stt_tournament_start(body: STTTournamentStart) -> dict[str, Any]:
+    return _run_stt_comparison(body)
+
+
+@app.get("/api/recordings/{recording_id}/stt-compare")
+def stt_compare_recording(recording_id: str) -> dict[str, Any]:
+    return _run_stt_comparison(STTTournamentStart(recording_id=recording_id, mode="Performance"))
 
 
 @app.post("/api/tournaments/preflight")

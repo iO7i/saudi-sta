@@ -47,7 +47,10 @@ def read_worker_status(path: str | Path = r"D:\models\_downloads\worker-status.j
         effective = "FAILED"
     elif state in {"QUEUE_COMPLETE", "STOPPED"}:
         effective = "STOPPED"
+    elif state in {"STARTING", "QUEUED", "WAITING_METADATA", "RETRY_PENDING"}:
+        # These are worker-internal states, not proof that bytes are moving.
+        # Expose them as stale until a DOWNLOADING heartbeat proves progress.
+        effective = "STALE" if process_alive and age is not None and age <= stale_after_seconds else "STOPPED"
     else:
         effective = state
     return {**body, "effective_state": effective, "heartbeat_age_seconds": age, "process_alive": process_alive, "stale_after_seconds": stale_after_seconds}
-
