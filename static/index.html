@@ -24,6 +24,7 @@
         <button class="nav active" data-view="workbench" data-ar="مساحة العمل" data-en="Workbench">مساحة العمل</button>
         <button class="nav" data-view="tournaments" data-ar="المقارنات" data-en="Tournaments">المقارنات</button>
         <button class="nav" data-view="seed" data-ar="مجموعة الصوت الأولية" data-en="Seed speech set">مجموعة الصوت الأولية</button>
+        <button class="nav" data-view="models" data-ar="مختبر النماذج" data-en="Models">مختبر النماذج</button>
         <button class="nav" data-view="review" data-ar="المراجعة والسجلات" data-en="Runs & Review">المراجعة والسجلات</button>
         <div class="policy-card">
           <strong data-ar="حد الإنفاق" data-en="Spend boundary">حد الإنفاق</strong>
@@ -123,6 +124,11 @@
         <div class="view-title"><div><p class="eyebrow" data-ar="المراجعة والحقوق قبل التعلم" data-en="REVIEW AND RIGHTS BEFORE LEARNING">المراجعة والحقوق قبل التعلم</p><h2 data-ar="السجلات والمراجعة" data-en="Runs & Review">السجلات والمراجعة</h2></div><button id="refreshRecords" class="secondary" type="button" data-ar="تحديث" data-en="Refresh">تحديث</button></div>
         <section class="panel"><div id="recordsOutput" class="empty" data-ar="لا توجد سجلات محفوظة بعد." data-en="No saved records yet.">لا توجد سجلات محفوظة بعد.</div></section>
         <section class="panel"><div class="panel-heading"><h3 data-ar="بيان أهلية التدريب" data-en="Training eligibility manifest">بيان أهلية التدريب</h3><button id="manifestButton" class="secondary" type="button" data-ar="فحص" data-en="Inspect">فحص</button></div><pre id="manifestOutput" class="muted">—</pre><p class="small" data-ar="لا تُصدَّر ملفات الصوت الخاصة. الحالات الافتراضية غير مؤهلة حتى تُمنح الحقوق وتتم مراجعة بشرية." data-en="Private audio is not exported. Defaults are ineligible until rights are granted and a human reviews them.">لا تُصدَّر ملفات الصوت الخاصة. الحالات الافتراضية غير مؤهلة حتى تُمنح الحقوق وتتم مراجعة بشرية.</p></section>
+      </section>
+
+      <section id="models" class="view">
+        <div class="view-title"><div><p class="eyebrow" data-ar="وصول الملفات دون تفعيل تلقائي" data-en="ARTIFACT ARRIVAL WITHOUT AUTO-ACTIVATION">وصول الملفات دون تفعيل تلقائي</p><h2 data-ar="مختبر النماذج" data-en="Model laboratory">مختبر النماذج</h2></div><button id="refreshModels" class="secondary" type="button" data-ar="فحص الملفات" data-en="Scan artifacts">فحص الملفات</button></div>
+        <section class="panel"><p class="small muted" data-ar="الفحص يقرأ جذور D:\\models المصرح بها فقط. ظهور ملف لا يشغّل نموذجاً ولا يبدّل الوصفة." data-en="The scanner reads only configured D:\\models roots. A file arrival never runs or activates a model.">الفحص يقرأ جذور D:\\models المصرح بها فقط. ظهور ملف لا يشغّل نموذجاً ولا يبدّل الوصفة.</p><div id="modelsOutput" class="empty">—</div></section>
       </section>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>

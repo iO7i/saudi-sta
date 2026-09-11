@@ -14,8 +14,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .engine import Engine, apply_to_sandbox
+from .download_status import read_worker_status
 from .policy import PolicyViolation, allowed_browser_host, allowed_origin
-from .providers import FasterWhisperAdapter, LlamaCppAdapter, LocalArtifactRegistry, LocalModelUnavailable, OllamaAdapter, TransformersWhisperAdapter, provider_matrix
+from .providers import AudarMtmdAdapter, FasterWhisperAdapter, LlamaCppAdapter, LocalArtifactRegistry, LocalModelUnavailable, OllamaAdapter, TransformersWhisperAdapter, provider_matrix
+from .model_registry import configured_roots, scan_models
 from .schemas import ApplyRequest, Recipe, ReviewUpdate, Role, RoleBinding, RunRequest, RunStatus, SeedHumanCaseCreate, ToolProposal, TournamentStart, TranscriptEdit
 from .store import Store
 from .tournament import TournamentManager
@@ -28,6 +30,7 @@ ollama = OllamaAdapter()
 artifact_registry = LocalArtifactRegistry()
 faster_speech = FasterWhisperAdapter()
 speech = TransformersWhisperAdapter(artifact_registry)
+audar_speech = AudarMtmdAdapter(artifact_registry)
 local_text = LlamaCppAdapter(artifact_registry)
 engine = Engine(ollama, local_text)
 app = FastAPI(title="Saudi STA Workbench", version="0.1.0", docs_url=None, redoc_url=None)
@@ -46,11 +49,11 @@ def default_recipes() -> list[Recipe]:
     return [
         Recipe(
             id="demo_direct_v1", name="Demo Rules · direct function proposal", action_mode="DIRECT", summary_branch=True,
-            bindings={"summarize": demo_binding(Role.SUMMARIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
+            graph=["function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
         ),
         Recipe(
             id="demo_two_stage_v1", name="Demo Rules · semantic plan then proposal", action_mode="TWO_STAGE", summary_branch=True,
-            bindings={"summarize": demo_binding(Role.SUMMARIZE), "actionize": demo_binding(Role.ACTIONIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
+            graph=["actionize", "function_call"], bindings={"summarize": demo_binding(Role.SUMMARIZE), "actionize": demo_binding(Role.ACTIONIZE), "function_call": demo_binding(Role.FUNCTION_CALL)},
         ),
     ]
 
@@ -74,16 +77,19 @@ def local_default_recipes() -> list[Recipe]:
             Recipe(
                 id=f"real_{safe_id}_direct_v1", name=f"Real local · {model_id} · Direct STT → function call",
                 version="slice02-v1", action_mode="DIRECT", summary_branch=False,
+                graph=["transcribe", "function_call"],
                 bindings={"transcribe": stt, "function_call": roles["function_call"]}, required_outputs=["proposal"],
             ),
             Recipe(
                 id=f"real_{safe_id}_semantic_v1", name=f"Real local · {model_id} · Semantic STT → actionize → function call",
                 version="slice02-v1", action_mode="TWO_STAGE", summary_branch=False,
+                graph=["transcribe", "actionize", "function_call"],
                 bindings={"transcribe": stt, "actionize": roles["actionize"], "function_call": roles["function_call"]}, required_outputs=["proposal"],
             ),
             Recipe(
                 id=f"real_{safe_id}_semantic_summary_v1", name=f"Real local · {model_id} · Semantic + summary",
                 version="slice02-v1", action_mode="TWO_STAGE", summary_branch=True,
+                graph=["transcribe", "summarize", "actionize", "function_call"],
                 bindings={"transcribe": stt, "summarize": roles["summarize"], "actionize": roles["actionize"], "function_call": roles["function_call"]},
             ),
         ])
@@ -103,7 +109,7 @@ def ensure_local_default_recipes() -> None:
 
 def current_bindings() -> list[RoleBinding]:
     # No automatic discovery during startup. A configured local endpoint is queried only when this catalog is requested.
-    return [demo_binding(role) for role in (Role.SUMMARIZE, Role.ACTIONIZE, Role.FUNCTION_CALL)] + [speech.binding(), faster_speech.binding()] + local_text.discover() + ollama.discover()
+    return [demo_binding(role) for role in (Role.SUMMARIZE, Role.ACTIONIZE, Role.FUNCTION_CALL)] + [speech.binding(), audar_speech.binding(), faster_speech.binding()] + local_text.discover() + ollama.discover()
 
 
 def catalog_by_id() -> dict[str, RoleBinding]:
@@ -147,6 +153,11 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "execution_policy": "ZERO_SPEND_LOCAL", "remote_inference": "blocked", "data_dir": "local runtime directory"}
 
 
+@app.get("/api/download-worker")
+def download_worker_status() -> dict[str, Any]:
+    return read_worker_status()
+
+
 @app.get("/api/catalog")
 def catalog() -> dict[str, Any]:
     bindings = [binding.model_dump(mode="json") for binding in current_bindings()]
@@ -154,9 +165,15 @@ def catalog() -> dict[str, Any]:
         "execution_policy": "ZERO_SPEND_LOCAL",
         "bindings": bindings,
         "reserved_roles": [role.value for role in (Role.ACOUSTIC_REPAIR, Role.SEMANTIC_REPAIR, Role.VERIFY, Role.RESPOND, Role.SYNTHESIZE)],
-        "provider_matrix": provider_matrix(ollama, faster_speech, speech, local_text),
+        "provider_matrix": provider_matrix(ollama, faster_speech, speech, audar_speech, local_text),
         "locality_checks": ollama.checks,
     }
+
+
+@app.get("/api/models")
+def models() -> dict[str, Any]:
+    """Passive model-lab inventory; arrival never activates a route."""
+    return {"model_root": [str(root) for root in configured_roots()], "auto_activation": False, "models": scan_models()}
 
 
 @app.get("/api/recipes")
@@ -204,9 +221,10 @@ def run_workbench(body: RunRequest) -> dict[str, Any]:
     transcription = None
     if not text and recording_name:
         transcribe_binding = recipe.bindings.get("transcribe")
-        if transcribe_binding and transcribe_binding.provider == "transformers_whisper_local" and transcribe_binding.available:
+        if transcribe_binding and transcribe_binding.provider in {"transformers_whisper_local", "audar_mtmd_local"} and transcribe_binding.available:
             try:
-                transcription = speech.transcribe(store.recording_path(body.recording_id))
+                adapter = audar_speech if transcribe_binding.provider == "audar_mtmd_local" else speech
+                transcription = adapter.transcribe(transcribe_binding, store.recording_path(body.recording_id)) if transcribe_binding.provider == "audar_mtmd_local" else adapter.transcribe(store.recording_path(body.recording_id))
                 text = transcription["text"]
             except (LocalModelUnavailable, PolicyViolation) as exc:
                 transcription = {"status": "UNAVAILABLE_LOCAL_MODEL", "reason": str(exc)}

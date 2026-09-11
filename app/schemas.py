@@ -20,6 +20,7 @@ class Role(str, Enum):
 
 OPERATIONAL_ROLES = {Role.TRANSCRIBE, Role.SUMMARIZE, Role.ACTIONIZE, Role.FUNCTION_CALL}
 RESERVED_ROLES = set(Role) - OPERATIONAL_ROLES
+PIPELINE_STAGES = ("vad", "turn_detection", "diarization", "transcribe", "summarize", "actionize", "function_call", "verify", "synthesize")
 
 
 class CapabilityProvenance(str, Enum):
@@ -81,11 +82,22 @@ class Recipe(BaseModel):
     name: str
     version: str = "1"
     bindings: dict[str, RoleBinding]
+    # Explicit stage graph.  Bindings may omit any bypassed stage; keeping the
+    # graph in the recipe makes route identity and later tournaments stable.
+    graph: list[str] = Field(default_factory=lambda: ["transcribe", "function_call"])
     action_mode: Literal["DIRECT", "TWO_STAGE"]
     summary_branch: bool = True
     locked_roles: list[str] = Field(default_factory=list)
     required_outputs: list[str] = Field(default_factory=lambda: ["summary", "proposal"])
     created_by: str = "local-user"
+
+    @classmethod
+    def model_validate(cls, obj: Any, *args: Any, **kwargs: Any):  # type: ignore[override]
+        recipe = super().model_validate(obj, *args, **kwargs)
+        unknown = [stage for stage in recipe.graph if stage not in PIPELINE_STAGES]
+        if unknown:
+            raise ValueError(f"UNKNOWN_PIPELINE_STAGE:{','.join(unknown)}")
+        return recipe
 
 
 class SourceSpan(BaseModel):

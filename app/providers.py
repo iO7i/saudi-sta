@@ -5,6 +5,7 @@ import importlib.util
 import inspect
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,13 @@ class LocalArtifactRegistry:
 
     def __init__(self, manifest_path: str | None = None) -> None:
         configured = manifest_path or os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFEST")
-        default_path = Path("D:/saudi-sta-models/saudi-sta-local-models.json")
-        self.manifest_path = configured or (str(default_path) if default_path.is_file() else None)
+        configured_many = os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFESTS")
+        default_paths = [Path("D:/saudi-sta-models/saudi-sta-local-models.json"), Path("D:/models/whisper/saudi-sta-local-models.json"), Path("D:/models/audar/Audar-ASR-V1-Turbo/saudi-sta-audar-q4-manifest.json")]
+        raw_paths = ([configured] if configured else []) + ([item for item in configured_many.split(os.pathsep) if item] if configured_many else [])
+        if not raw_paths:
+            raw_paths.extend(str(path) for path in default_paths if path.is_file())
+        self.manifest_paths = list(dict.fromkeys(raw_paths))
+        self.manifest_path = self.manifest_paths[0] if self.manifest_paths else None
         self._hash_cache: dict[str, tuple[int, int, str]] = {}
 
     @staticmethod
@@ -48,17 +54,18 @@ class LocalArtifactRegistry:
         return "sha256:" + digest.hexdigest()
 
     def entries(self) -> list[dict[str, Any]]:
-        if not self.manifest_path:
-            return []
-        path = Path(self.manifest_path)
-        if not path.is_file():
-            return []
-        try:
-            body = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        entries = body.get("models", []) if isinstance(body, dict) else []
-        return [entry for entry in entries if isinstance(entry, dict)]
+        result: list[dict[str, Any]] = []
+        for manifest in self.manifest_paths:
+            path = Path(manifest)
+            if not path.is_file():
+                continue
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            entries = body.get("models", []) if isinstance(body, dict) else []
+            result.extend(entry for entry in entries if isinstance(entry, dict))
+        return result
 
     def verify(self, entry: dict[str, Any]) -> tuple[bool, str | None, list[dict[str, Any]]]:
         artifacts = entry.get("artifacts")
@@ -384,6 +391,89 @@ class TransformersWhisperAdapter:
         }
 
 
+class AudarMtmdAdapter:
+    """Pinned Audar GGUF + BF16 projector through llama.cpp mtmd.
+
+    The adapter accepts only an operator-written, hash-verified manifest and
+    invokes the exact local executable/model paths.  It never uses `-hf`, a
+    server endpoint, or an implicit download.
+    """
+
+    provider = "audar_mtmd_local"
+
+    def __init__(self, registry: LocalArtifactRegistry) -> None:
+        self.registry = registry
+        self._loaded_key: str | None = None
+
+    def _entry(self, binding: RoleBinding | None = None) -> dict[str, Any] | None:
+        entries = [entry for entry in self.registry.entries() if entry.get("provider") == self.provider]
+        if binding:
+            return self.registry.entry(binding.model_id, self.provider)
+        return entries[0] if entries else None
+
+    def status(self, binding: RoleBinding | None = None) -> dict[str, Any]:
+        entry = self._entry(binding)
+        if not entry:
+            return {"available": False, "reason": "UNAVAILABLE_LOCAL_MODEL: Audar mtmd manifest entry is required"}
+        runtime = Path(str(entry.get("runtime_path", "")))
+        if not runtime.is_file():
+            return {"available": False, "reason": "UNAVAILABLE_LOCAL_MODEL: llama-mtmd-cli executable is missing"}
+        valid, reason, artifacts = self.registry.verify(entry)
+        return {"available": valid, "reason": None if valid else f"UNAVAILABLE_LOCAL_MODEL: {reason}", "artifacts": artifacts, "runtime": str(runtime)}
+
+    def binding(self) -> RoleBinding:
+        entry = self._entry()
+        status = self.status()
+        if not entry:
+            return RoleBinding(id=f"{self.provider}:transcribe:v1", provider=self.provider, model_id="no-audar-manifest", role=Role.TRANSCRIBE, prompt_version="audar-ar-v1", schema_version="sta-v2", execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.UNKNOWN, available=False, unavailable_reason=status["reason"])
+        artifacts = entry.get("artifacts", [])
+        decoder_hash = next((item.get("sha256") for item in artifacts if "Q4_K_M" in str(item.get("path"))), "unknown")
+        return RoleBinding(
+            id=f"{self.provider}:{entry.get('id', 'AUDAR_TURBO_Q4_LOCAL_BRIDGE')}:transcribe", provider=self.provider,
+            model_id=str(entry.get("id", "AUDAR_TURBO_Q4_LOCAL_BRIDGE")), revision_or_digest=f"{entry.get('revision', 'unknown')};{decoder_hash}", role=Role.TRANSCRIBE,
+            prompt_version="audar-ar-v1", schema_version="sta-v2", generation={"temperature": 0, "max_tokens": 512, "runtime": "llama.cpp mtmd", "precision": entry.get("precision", "Q4_K_M")},
+            execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
+            capabilities=["transcribe", "arabic", "code_switching"] if status["available"] else [], available=status["available"], unavailable_reason=status["reason"], tool_mode="NONE",
+        )
+
+    @staticmethod
+    def _text_from_cli(stdout: str) -> str:
+        # llama-mtmd-cli emits diagnostics and the assistant completion. Keep
+        # the raw output separately; this conservative parser avoids inventing
+        # timestamps or confidence fields.
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        clean = [line for line in lines if not line.startswith(("llama_", "main:", "load_", "ggml_", "system_info", "sampling"))]
+        return (clean[-1] if clean else "").strip()
+
+    def transcribe(self, binding: RoleBinding, audio_path: Path) -> dict[str, Any]:
+        status = self.status(binding)
+        if not status["available"]:
+            raise LocalModelUnavailable(status["reason"])
+        assert_dispatch_allowed(self.provider, artifact_verified=True)
+        entry = self._entry(binding)
+        assert entry is not None
+        decoder = next((Path(str(item["path"])) for item in entry.get("artifacts", []) if "Q4_K_M" in str(item.get("path"))), None)
+        projector = next((Path(str(item["path"])) for item in entry.get("artifacts", []) if "mmproj" in str(item.get("path"))), None)
+        if not decoder or not projector or not audio_path.is_file():
+            raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: Audar decoder, BF16 projector, and audio are required")
+        command = [str(entry["runtime_path"]), "-m", str(decoder), "--mmproj", str(projector), "--audio", str(audio_path), "-sys", "فرّغ الكلام العربي التالي.", "--temp", "0", "-n", str(entry.get("max_tokens", 512))]
+        started = time.perf_counter()
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=float(entry.get("timeout_seconds", 180)), check=False, shell=False, env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+        except subprocess.TimeoutExpired as exc:
+            raise LocalModelUnavailable("LOCAL_AUDAR_TIMEOUT") from exc
+        elapsed = (time.perf_counter() - started) * 1000
+        if completed.returncode != 0:
+            raise LocalModelUnavailable(f"LOCAL_AUDAR_INFERENCE_FAILED:exit={completed.returncode}")
+        raw = completed.stdout
+        return {
+            "text": self._text_from_cli(raw), "segments": [], "language": None, "no_speech_probability": None,
+            "raw_output": raw, "runtime": "llama.cpp mtmd", "latency_ms": elapsed, "model_load_ms": None, "cold_start": None,
+            "resource_measurement": {"runtime": "llama.cpp mtmd", "execution_mode": "cpu", "artifact_bytes": sum(int(item.get("bytes", 0)) for item in status.get("artifacts", [])), "peak_ram_or_vram": None},
+            "signals": {"average_log_probability": {"available": False, "value": None}, "no_speech_probability": {"available": False, "value": None}, "compression_ratio": {"available": False, "value": None}, "segment_stability": {"available": False, "value": None}, "alternative_decoding": {"available": False, "value": None}},
+        }
+
+
 class LlamaCppAdapter:
     """Direct in-process GGUF adapter. It has no network endpoint or provider fallback."""
 
@@ -487,12 +577,13 @@ class LlamaCppAdapter:
         }
 
 
-def provider_matrix(ollama: OllamaAdapter, faster_speech: FasterWhisperAdapter, whisper: TransformersWhisperAdapter, text: LlamaCppAdapter) -> list[dict[str, Any]]:
+def provider_matrix(ollama: OllamaAdapter, faster_speech: FasterWhisperAdapter, whisper: TransformersWhisperAdapter, audar: AudarMtmdAdapter, text: LlamaCppAdapter) -> list[dict[str, Any]]:
     return [
         {"provider": "DEMO_RULES", "roles": ["summarize", "actionize", "function_call"], "state": "IMPLEMENTED", "evidence": "deterministic reference path, not ML"},
         {"provider": "Ollama", "roles": ["summarize", "actionize", "function_call"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "checks": ollama.checks, "sources": [OFFICIAL_SOURCES["ollama_tags"], OFFICIAL_SOURCES["ollama_chat"], OFFICIAL_SOURCES["ollama_locality"]]},
         {"provider": "faster-whisper", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_EXISTING_LOCAL_RUNTIME", "status": faster_speech.status(), "sources": [OFFICIAL_SOURCES["faster_whisper"]]},
         {"provider": "Transformers Whisper", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": whisper.status(), "sources": ["https://huggingface.co/openai/whisper-large-v3"]},
+        {"provider": "Audar Turbo Q4 local bridge", "roles": ["transcribe"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": audar.status(), "evidence": "REAL_LOCAL_MODEL; NOT_REFERENCE_PRECISION", "sources": ["https://huggingface.co/audarai/Audar-ASR-V1-Turbo"]},
         {"provider": "llama.cpp", "roles": ["summarize", "actionize", "function_call"], "state": "IMPLEMENTED_IF_VERIFIED_LOCAL", "status": text.status(), "sources": ["https://github.com/abetlen/llama-cpp-python"]},
         {"provider": "HUMAIN Voice", "roles": ["transcribe", "synthesize"], "state": "DISABLED_ZERO_SPEND_LOCAL", "preferred_provider": True, "currently_executable_provider": False, "sources": [OFFICIAL_SOURCES["humain_voice"]]},
         {"provider": "OpenAI", "roles": ["transcribe", "summarize", "actionize", "function_call"], "state": "DISABLED_ZERO_SPEND_LOCAL", "sources": [OFFICIAL_SOURCES["openai_function_calling"], OFFICIAL_SOURCES["openai_audio"]]},

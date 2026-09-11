@@ -41,7 +41,7 @@ def assert_dispatch_allowed(provider: str, endpoint: str | None = None, *, artif
     """Policy lives below the UI and is called by every adapter dispatch path."""
     if provider in REMOTE_PROVIDERS:
         raise PolicyViolation(f"REMOTE_DISPATCH_BLOCKED: {provider} is disabled by ZERO_SPEND_LOCAL")
-    if provider not in {"demo_rules", "ollama_local", "faster_whisper_local", "transformers_whisper_local", "llama_cpp_local"}:
+    if provider not in {"demo_rules", "ollama_local", "faster_whisper_local", "transformers_whisper_local", "llama_cpp_local", "audar_mtmd_local"}:
         raise PolicyViolation(f"UNKNOWN_PROVIDER_BLOCKED: {provider}")
     if provider == "ollama_local":
         if not endpoint:
@@ -51,7 +51,7 @@ def assert_dispatch_allowed(provider: str, endpoint: str | None = None, *, artif
             raise PolicyViolation(check.reason or "LOCALITY_CHECK_FAILED")
     if provider == "faster_whisper_local" and not artifact_verified:
         raise PolicyViolation("UNVERIFIED_LOCAL_SPEECH_ARTIFACT")
-    if provider in {"transformers_whisper_local", "llama_cpp_local"} and not artifact_verified:
+    if provider in {"transformers_whisper_local", "llama_cpp_local", "audar_mtmd_local"} and not artifact_verified:
         raise PolicyViolation("UNVERIFIED_LOCAL_MODEL_ARTIFACT")
 
 

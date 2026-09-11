@@ -84,6 +84,12 @@ def test_training_manifest_excludes_unknown_rights_and_auto_promotion():
     assert all("training_use_not_granted" in entry["reasons"] for entry in manifest["excluded"])
 
 
+def test_download_worker_status_is_external_and_read_only():
+    response = client.get("/api/download-worker")
+    assert response.status_code == 200
+    assert response.json().get("effective_state") in {"ACTIVE", "STALE", "STOPPED", "FAILED", "DOWNLOADING", "STARTING", "QUEUED"}
+
+
 def test_seed_human_case_is_explicit_and_separate_from_smoke_fixtures():
     uploaded = client.post("/api/recordings", files={"file": ("seed.wav", wav_bytes(), "audio/wav")})
     assert uploaded.status_code == 200

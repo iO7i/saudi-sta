@@ -282,6 +282,18 @@
     $("seedCasesOutput").textContent = pretty({ dataset_id: seed.dataset_id, evidence_type: seed.evidence_type, case_count: seed.case_count, target_case_count: seed.target_case_count, cases: seed.cases.map((entry) => ({ id: entry.id, recording_id: entry.recording_id, reviewed_transcript: entry.reviewed_transcript, expected: entry.expected, provenance: entry.provenance })) });
   }
 
+  async function refreshModels() {
+    const payload = await api("/api/models");
+    const target = $("modelsOutput"); target.replaceChildren();
+    const table = document.createElement("table");
+    const head = document.createElement("thead"); const row = document.createElement("tr");
+    ["Model", "Stage", "Precision", "Artifact state", "Runtime", "License gate"].forEach((labelText) => { const cell = document.createElement("th"); cell.textContent = labelText; row.append(cell); });
+    head.append(row); table.append(head);
+    const body = document.createElement("tbody");
+    payload.models.forEach((model) => { const tr = document.createElement("tr"); [model.id, (model.stage || []).join(", "), model.precision || "UNKNOWN", model.artifact_state, model.runtime, `${model.license_id || "UNKNOWN"} · commercial ${model.commercial_status || "UNKNOWN"}`].forEach((value) => { const td = document.createElement("td"); td.textContent = value == null ? "—" : String(value); tr.append(td); }); body.append(tr); });
+    table.append(body); target.append(table);
+  }
+
   async function saveSeedCase() {
     if (!state.recordingId) throw new Error("Record or upload an audio clip in Workbench first.");
     let expected_arguments, critical_spans;
@@ -299,7 +311,7 @@
 
   function bindEvents() {
     $("localeToggle").onclick = () => setLocale(state.locale === "ar" ? "en" : "ar");
-    document.querySelectorAll(".nav").forEach((button) => button.onclick = () => { document.querySelectorAll(".nav,.view").forEach((node) => node.classList.remove("active")); button.classList.add("active"); $(button.dataset.view).classList.add("active"); if (button.dataset.view === "review") refreshRecords().catch((error) => toast(error.message)); if (button.dataset.view === "seed") refreshSeedCases().catch((error) => toast(error.message)); });
+    document.querySelectorAll(".nav").forEach((button) => button.onclick = () => { document.querySelectorAll(".nav,.view").forEach((node) => node.classList.remove("active")); button.classList.add("active"); $(button.dataset.view).classList.add("active"); if (button.dataset.view === "review") refreshRecords().catch((error) => toast(error.message)); if (button.dataset.view === "seed") refreshSeedCases().catch((error) => toast(error.message)); if (button.dataset.view === "models") refreshModels().catch((error) => toast(error.message)); });
     document.querySelectorAll("[data-sample]").forEach((button) => button.onclick = () => { $("sourceText").value = button.dataset.sample; });
     $("recipeSelect").onchange = (event) => loadRecipeIntoBuilder(event.target.value);
     $("saveRecipe").onclick = () => saveRecipe().catch((error) => toast(error.message));
@@ -314,6 +326,7 @@
     $("saveSeedCase").onclick = () => saveSeedCase().catch((error) => toast(error.message));
     $("refreshSeedCases").onclick = () => refreshSeedCases().catch((error) => toast(error.message));
     $("refreshRecords").onclick = () => refreshRecords().catch((error) => toast(error.message));
+    $("refreshModels").onclick = () => refreshModels().catch((error) => toast(error.message));
     $("manifestButton").onclick = () => api("/api/training-manifest").then((manifest) => { $("manifestOutput").textContent = pretty(manifest); }).catch((error) => toast(error.message));
   }
 

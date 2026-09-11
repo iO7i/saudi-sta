@@ -1,12 +1,15 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.engine import Engine, apply_to_sandbox, validate_tool_proposal
 from app.main import default_recipes
 from app.policy import PolicyViolation, assert_dispatch_allowed, validate_loopback_url
-from app.providers import LlamaCppAdapter, LocalArtifactRegistry
-from app.schemas import RunStatus, ToolProposal
+from app.providers import AudarMtmdAdapter, LlamaCppAdapter, LocalArtifactRegistry
+from app.schemas import Recipe, RunStatus, ToolProposal
+from app.model_registry import ARTIFACT_STATES, scan_models
+from app.download_status import read_worker_status
 
 
 def test_zero_spend_policy_blocks_remote_even_if_environment_has_keys(monkeypatch):
@@ -34,6 +37,41 @@ def test_direct_local_adapters_require_a_verified_artifact(tmp_path):
     assert adapter.status()["available"] is False
     with pytest.raises(PolicyViolation):
         assert_dispatch_allowed("llama_cpp_local", artifact_verified=False)
+
+
+def test_audar_provider_is_local_only_and_absent_until_manifest_and_runtime_exist(tmp_path):
+    adapter = AudarMtmdAdapter(LocalArtifactRegistry(str(tmp_path / "missing.json")))
+    binding = adapter.binding()
+    assert binding.available is False
+    assert "manifest" in (binding.unavailable_reason or "")
+    assert_dispatch_allowed("audar_mtmd_local", artifact_verified=True)
+
+
+def test_recipe_graph_rejects_unknown_stage_and_preserves_independent_stages():
+    direct, staged = default_recipes()
+    assert direct.graph == ["function_call"]
+    assert staged.graph == ["actionize", "function_call"]
+    body = direct.model_dump(mode="json")
+    body["graph"] = ["transcribe", "made_up_stage"]
+    with pytest.raises(ValueError, match="UNKNOWN_PIPELINE_STAGE"):
+        Recipe.model_validate(body)
+
+
+def test_artifact_scanner_is_passive_and_reports_not_installed_without_auto_activation(tmp_path):
+    scanned = scan_models([tmp_path])
+    assert scanned
+    assert all(entry["artifact_state"] in ARTIFACT_STATES for entry in scanned)
+    assert all(entry["auto_activation"] is False for entry in scanned)
+    assert next(entry for entry in scanned if entry["id"] == "AUDAR_TURBO_Q4_LOCAL_BRIDGE")["artifact_state"] == "NOT_INSTALLED"
+
+
+def test_download_worker_status_distinguishes_stale_from_stopped(tmp_path):
+    status = tmp_path / "worker-status.json"
+    old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    status.write_text(json.dumps({"pid": 999999, "state": "DOWNLOADING", "last_heartbeat": old}), encoding="utf-8")
+    assert read_worker_status(status)["effective_state"] == "STALE"
+    status.write_text(json.dumps({"pid": 999999, "state": "QUEUE_COMPLETE", "last_heartbeat": old}), encoding="utf-8")
+    assert read_worker_status(status)["effective_state"] == "STOPPED"
 
 
 def test_direct_and_two_stage_recipes_record_different_real_stage_counts():
