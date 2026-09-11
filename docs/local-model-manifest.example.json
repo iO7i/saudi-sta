@@ -1,0 +1,28 @@
+{
+  "format": "SAUDI_STA_LOCAL_MODEL_MANIFEST_V1",
+  "models": [
+    {
+      "id": "whisper-large-v3-fp32",
+      "provider": "transformers_whisper_local",
+      "source_model_id": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+      "license": "Apache-2.0",
+      "model_dir": "D:\\path-outside-git\\whisper-large-v3",
+      "roles": ["transcribe"],
+      "artifacts": [
+        {"path": "D:\\path-outside-git\\whisper-large-v3\\model.fp32-00001-of-00002.safetensors", "sha256": "sha256:replace-with-verified-digest"},
+        {"path": "D:\\path-outside-git\\whisper-large-v3\\model.fp32-00002-of-00002.safetensors", "sha256": "sha256:replace-with-verified-digest"}
+      ]
+    },
+    {
+      "id": "qwen35-4b-q4-k-m",
+      "provider": "llama_cpp_local",
+      "source_model_id": "Qwen/Qwen3.5-4B",
+      "revision": "replace-with-pinned-conversion-revision",
+      "license": "Apache-2.0",
+      "quantization": "Q4_K_M",
+      "roles": ["summarize", "actionize", "function_call"],
+      "artifacts": [{"path": "D:\\path-outside-git\\Qwen3.5-4B-Q4_K_M.gguf", "sha256": "sha256:replace-with-verified-digest"}]
+    }
+  ]
+}
