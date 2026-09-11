@@ -8,7 +8,7 @@ os.environ.setdefault("SAUDI_STA_DATA_DIR", tempfile.mkdtemp(prefix="saudi-sta-t
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, store
 
 
 client = TestClient(app)
@@ -127,3 +127,41 @@ def test_seed_human_case_is_explicit_and_separate_from_smoke_fixtures():
     assert plan.status_code == 200
     assert plan.json()["dataset"]["evidence_type"] == "HUMAN_REVIEWED"
     assert plan.json()["excluded_candidates"][0]["reason"] == "SEED_HUMAN_EVAL_REQUIRES_A_REAL_TRANSCRIBE_BINDING"
+
+
+def test_review_states_and_model_outputs_remain_separate():
+    uploaded = client.post("/api/recordings", files={"file": ("review.wav", wav_bytes(), "audio/wav")})
+    assert uploaded.status_code == 200
+    run = client.post("/api/runs", json={"text": "حط milk في المقاضي", "recipe_id": "demo_direct_v1", "recording_id": uploaded.json()["recording_id"], "manual_transcript": True})
+    record = run.json()["record"]
+    assert record["review_state"] == "RECORDED"
+    original_proposal = record["outputs"]["proposal"]
+    reviewed = client.patch(f"/api/records/{record['id']}/review", json={"label_state": "CANDIDATE", "reviewer_type": "human", "reviewer_identity": "reviewer-1"})
+    assert reviewed.json()["review_state"] == "HUMAN_TRANSCRIPT_REVIEWED"
+    edited = client.patch(f"/api/records/{record['id']}/transcript", json={"text": "حط شاي في المقاضي", "expected_revision": 1})
+    assert edited.json()["original_text"] == "حط milk في المقاضي"
+    assert edited.json()["outputs"]["proposal"] == original_proposal
+    assert edited.json()["outputs"]["transcript_edit_history"][0]["original_text"] == "حط milk في المقاضي"
+
+
+def test_original_model_transcript_is_immutable_when_human_text_is_edited():
+    record_id = store.save_record("raw source", {"evidence_type": "REAL_LOCAL_MODEL", "transcription": {"text": "الناتج الأصلي", "runtime": "fixture"}})
+    edited = client.patch(f"/api/records/{record_id}/transcript", json={"text": "النص البشري المصحح", "expected_revision": 1})
+    assert edited.status_code == 200
+    payload = edited.json()
+    assert payload["review_state"] == "MODEL_TRANSCRIBED"
+    assert payload["outputs"]["transcription"]["text"] == "الناتج الأصلي"
+    assert payload["outputs"]["transcript_edit_history"][0]["original_text"] == "raw source"
+
+
+def test_semantic_reference_review_has_an_explicit_state_without_gold_promotion():
+    uploaded = client.post("/api/recordings", files={"file": ("semantic.wav", wav_bytes(), "audio/wav")})
+    saved = client.post("/api/seed-human-eval", json={
+        "recording_id": uploaded.json()["recording_id"], "reviewed_transcript": "حط milk",
+        "expected_status": "READY", "expected_tool_name": "add_list_items", "expected_arguments": {"list_name": "shopping", "items": ["milk"]},
+        "semantic_reference_reviewed": True, "reviewer_identity": "reviewer-2",
+    })
+    assert saved.status_code == 200
+    case = saved.json()["case"]
+    assert case["review_state"] == "SEMANTIC_REFERENCE_REVIEWED"
+    assert case["provenance"]["pseudo_labels_used"] is False

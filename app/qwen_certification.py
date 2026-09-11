@@ -41,6 +41,16 @@ QWEN_CERTIFICATION_CASES: tuple[dict[str, Any], ...] = (
         "text": "أضفها للقائمة الثانية.",
         "focus": ["unresolved_reference", "clarification"],
     },
+    {
+        "id": "saudi_revision",
+        "text": "أنشئ مسودة تذكير غداً الساعة ثمانية، وصححها إلى تسعة مساءً.",
+        "focus": ["draft_revision", "correction", "final_argument"],
+    },
+    {
+        "id": "saudi_cancellation",
+        "text": "ألغِ مسودة التذكير التي أنشأناها قبل قليل.",
+        "focus": ["draft_cancellation", "no_new_action"],
+    },
 )
 
 
@@ -84,4 +94,3 @@ def run_qwen_certification(
             except Exception as exc:
                 results.append({"case_id": case["id"], "role": role, "status": "FAILED", "latency_ms": (time.perf_counter() - started) * 1000, "error": f"{type(exc).__name__}:{str(exc)[:240]}"})
     return {**plan, "status": "COMPLETED", "evidence_type": "REAL_LOCAL_MODEL", "results": results}
-

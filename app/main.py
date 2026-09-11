@@ -388,8 +388,10 @@ def add_seed_human_eval(body: SeedHumanCaseCreate) -> dict[str, Any]:
         "recording_session_id": body.recording_session_id, "critical_spans": body.critical_spans,
         "notes": body.notes, "label_source": "explicit_human_review", "pseudo_labels_used": False,
     }
+    review_state = "SEMANTIC_REFERENCE_REVIEWED" if body.semantic_reference_reviewed else "HUMAN_TRANSCRIPT_REVIEWED"
+    provenance["review_state"] = review_state
     try:
-        case = store.save_seed_human_case(body.recording_id, body.reviewed_transcript.strip(), expected, provenance)
+        case = store.save_seed_human_case(body.recording_id, body.reviewed_transcript.strip(), expected, provenance, review_state)
     except Exception as exc:
         if "UNIQUE" in str(exc).upper():
             raise HTTPException(409, "RECORDING_ALREADY_HAS_SEED_HUMAN_LABEL") from exc

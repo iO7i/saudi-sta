@@ -38,7 +38,7 @@ PLANNED_MODELS: list[dict[str, Any]] = [
         "artifact_root": "audar/Audar-ASR-V1-Turbo", "artifacts": [
             _artifact("Audar-ASR-V1-Turbo-Q4_K_M.gguf", bytes_=1282434912, sha256="c55e3c28225ef6e9b56906a6463af62d34ed417803c45f3b7b20f463af2e8cf4"),
             _artifact("mmproj-Audar-ASR-V1-Turbo.gguf", bytes_=641773856, sha256="190459e806938175711779847eb62ea609cd78b8d2ec06fb96a94d69ab37a9be"),
-        ], "verified_capabilities": [], "unverified_claims": ["Arabic transcription", "Gulf dialects", "code-switching"],
+        ], "verified_capabilities": ["transcribe"], "unverified_claims": ["Gulf dialects", "code-switching"],
         "runtime_certified": True, "capability_certified": True, "evidence_notes": "Q4 local bridge; NOT_REFERENCE_PRECISION; no leaderboard parity claim.",
     },
     {

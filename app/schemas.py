@@ -59,6 +59,13 @@ class LabelState(str, Enum):
     REJECTED = "REJECTED"
 
 
+class ReviewState(str, Enum):
+    RECORDED = "RECORDED"
+    MODEL_TRANSCRIBED = "MODEL_TRANSCRIBED"
+    HUMAN_TRANSCRIPT_REVIEWED = "HUMAN_TRANSCRIPT_REVIEWED"
+    SEMANTIC_REFERENCE_REVIEWED = "SEMANTIC_REFERENCE_REVIEWED"
+
+
 class RoleBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -215,3 +222,4 @@ class SeedHumanCaseCreate(BaseModel):
     reviewer_identity: str | None = Field(default=None, max_length=100)
     recording_session_id: str | None = Field(default=None, max_length=100)
     notes: str | None = Field(default=None, max_length=1000)
+    semantic_reference_reviewed: bool = False

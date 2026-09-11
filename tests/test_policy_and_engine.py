@@ -76,8 +76,27 @@ def test_stt_tournament_keeps_quality_unranked_without_human_reference(tmp_path)
         def __init__(self, name):
             self.id = name; self.model_id = name; self.provider = "test_local"; self.revision_or_digest = "rev;hash"; self.generation = {}; self.available = True
     report = run_stt_tournament(audio, [Binding("a"), Binding("b")], lambda binding, path: {"text": "same text", "latency_ms": 2.0}, mode="Performance")
-    assert report["selection"]["outcome"] == "INSUFFICIENT_HUMAN_EVIDENCE"
+    assert report["selection"]["outcome"] == "NO_COMPARABLE_HUMAN_EVIDENCE"
+    assert report["selection"]["quality_ranking"] == "INSUFFICIENT_HUMAN_EVIDENCE"
     assert report["remote_calls"] == 0 and report["confidence_diagnostics"]["calibrated_correctness"] is None
+
+
+def test_stt_speed_cost_manual_and_identity_semantics_are_explicit(tmp_path):
+    audio = tmp_path / "input.wav"; audio.write_bytes(b"same-input")
+    class Binding:
+        def __init__(self, name):
+            self.id = name; self.model_id = name; self.provider = "test_local"; self.revision_or_digest = f"rev-{name};hash-{name}"; self.generation = {"precision": name, "runtime": "test-runtime"}; self.available = True
+    bindings = [Binding("slow"), Binding("fast")]
+    def transcribe(binding, path):
+        return {"text": "same text", "latency_ms": 10.0 if binding.id == "slow" else 2.0}
+    speed = run_stt_tournament(audio, bindings, transcribe, mode="Speed")
+    assert speed["selection"]["recommendation"] == "fast"
+    assert speed["audio_identity"]["size_bytes"] == len(b"same-input")
+    cost = run_stt_tournament(audio, bindings, transcribe, mode="Cost")
+    assert cost["selection"]["outcome"] == "MONETARY_TIE"
+    assert cost["selection"]["recommendation"] is None and cost["selection"]["secondary_recommendation"] == "fast"
+    manual = run_stt_tournament(audio, bindings, transcribe, mode="Manual", manual_binding_id="slow")
+    assert manual["selection"]["recommendation"] == "slow"
 
 
 def test_disagreement_does_not_majority_vote_and_labels_code_switch_and_numbers():
@@ -88,6 +107,16 @@ def test_disagreement_does_not_majority_vote_and_labels_code_switch_and_numbers(
     ], "حط milk")
     assert report["majority_vote_used"] is False
     assert any(region["code_switch_disagreement"] or region["number_disagreement"] for region in report["regions"])
+
+
+def test_disagreement_labels_names_and_correction_markers_without_voting():
+    report = disagreement_regions([
+        {"candidate_id": "a", "status": "READY", "text": "ذكرني محمد لا ثمانية"},
+        {"candidate_id": "b", "status": "READY", "text": "ذكرني خالد ثمانية"},
+    ])
+    assert report["majority_vote_used"] is False
+    assert any(region["proper_name_disagreement"] for region in report["regions"])
+    assert any(region["correction_disagreement"] for region in report["regions"])
 
 
 def test_recipe_graph_rejects_unknown_stage_and_preserves_independent_stages():
@@ -154,6 +183,7 @@ def test_qwen_certification_is_explicitly_waiting_without_a_verified_binding():
     assert plan["status"] == "WAITING_FOR_QWEN_ARTIFACT"
     assert plan["roles"] == list(QWEN_CERTIFICATION_ROLES)
     assert plan["cases"] == [case["id"] for case in QWEN_CERTIFICATION_CASES]
+    assert {"saudi_revision", "saudi_cancellation"}.issubset(plan["cases"])
 
 
 def test_correction_and_ambiguity_are_preserved_instead_of_inventing_meridiem():

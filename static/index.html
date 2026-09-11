@@ -4,23 +4,23 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>Saudi STA · Workbench</title>
+    <title>Saudi STA · مساحة العمل</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
     <header class="topbar">
       <div>
         <p class="eyebrow" data-ar="مساحة عمل محلية أولاً" data-en="LOCAL-FIRST WORKBENCH">مساحة عمل محلية أولاً</p>
-        <h1>Saudi STA <span>Slice 02 · local inference baseline</span></h1>
+        <h1>Saudi STA <span data-ar="الشريحة 02 · خط أساس الاستدلال المحلي" data-en="Slice 02 · local inference baseline">الشريحة 02 · خط أساس الاستدلال المحلي</span></h1>
       </div>
       <div class="header-actions">
-        <span class="status green"><i></i> ZERO_SPEND_LOCAL</span>
+        <span class="status green" data-status-code="ZERO_SPEND_LOCAL"><i></i><span class="status-label">محليًا دون تكلفة</span><span class="status-code mono">ZERO_SPEND_LOCAL</span></span>
         <button id="localeToggle" class="quiet" type="button">English</button>
       </div>
     </header>
 
     <main>
-      <aside class="side-nav" aria-label="التنقل">
+      <aside class="side-nav" aria-label="التنقل" data-ar-label="التنقل" data-en-label="Navigation">
         <button class="nav active" data-view="workbench" data-ar="مساحة العمل" data-en="Workbench">مساحة العمل</button>
         <button class="nav" data-view="tournaments" data-ar="المقارنات" data-en="Tournaments">المقارنات</button>
         <button class="nav" data-view="seed" data-ar="مجموعة الصوت الأولية" data-en="Seed speech set">مجموعة الصوت الأولية</button>
@@ -39,7 +39,7 @@
             <p class="eyebrow" data-ar="تحويل الكلام أو النص إلى مسودات آمنة" data-en="TURN SPEECH OR TEXT INTO SAFE DRAFTS">تحويل الكلام أو النص إلى مسودات آمنة</p>
             <h2 data-ar="مساحة العمل" data-en="Workbench">مساحة العمل</h2>
           </div>
-          <span id="runtimeStatus" class="status amber"><i></i> DEMO_RULES</span>
+          <span id="runtimeStatus" class="status amber" data-status-code="DEMO_RULES" data-status-tone="amber"><i></i><span class="status-label">قواعد تجريبية</span><span class="status-code mono">DEMO_RULES</span></span>
         </div>
 
         <div class="workbench-grid">
@@ -49,10 +49,10 @@
               <span class="badge" data-ar="لا تعديل صامت" data-en="no silent rewrite">لا تعديل صامت</span>
             </div>
             <textarea id="sourceText" rows="8" data-ar-placeholder="اكتب بالعربية أو English… النص الأصلي يبقى الدليل." data-en-placeholder="Write in Arabic or English… original text remains the evidence." placeholder="اكتب بالعربية أو English… النص الأصلي يبقى الدليل."></textarea>
-            <div class="samples" aria-label="عينات">
-              <button type="button" data-sample="حط milk وقهوة في قائمة المقاضي">milk + قهوة</button>
-              <button type="button" data-sample="ذكّرني بكرة الساعة ثمانية، لا خليها تسعة">تصحيح تذكير</button>
-              <button type="button" data-sample="اكتب رسالة لخالد إني بتأخر، بس لا ترسلها">مسودة رسالة</button>
+            <div class="samples" aria-label="عينات" data-ar-label="عينات" data-en-label="Examples">
+              <button type="button" data-sample="حط milk وقهوة في قائمة المقاضي" data-ar="milk + قهوة" data-en="milk + coffee">milk + قهوة</button>
+              <button type="button" data-sample="ذكّرني بكرة الساعة ثمانية، لا خليها تسعة" data-ar="تصحيح تذكير" data-en="Reminder correction">تصحيح تذكير</button>
+              <button type="button" data-sample="اكتب رسالة لخالد إني بتأخر، بس لا ترسلها" data-ar="مسودة رسالة" data-en="Message draft">مسودة رسالة</button>
             </div>
             <div class="audio-row">
               <label class="upload"><input id="audioFile" type="file" accept="audio/wav,audio/webm,audio/ogg,audio/mpeg,audio/mp4"> <span data-ar="رفع ملف صوت" data-en="Upload audio">رفع ملف صوت</span></label>
@@ -69,26 +69,26 @@
               <h3 data-ar="وصفة قابلة للقياس" data-en="Measured recipe">وصفة قابلة للقياس</h3>
               <span class="badge mono">v1</span>
             </div>
-            <label class="field"><span data-ar="اسم الوصفة" data-en="Recipe name">اسم الوصفة</span><input id="recipeName" value="My local recipe"></label>
+            <label class="field"><span data-ar="اسم الوصفة" data-en="Recipe name">اسم الوصفة</span><input id="recipeName" value="مساري المحلي"></label>
             <div class="binding"><label><span data-ar="تفريغ الصوت" data-en="Transcribe audio">تفريغ الصوت</span><select id="bindingTranscribe"></select></label><label class="lock"><input id="lockTranscribe" type="checkbox"> <span data-ar="قفل" data-en="Lock">قفل</span></label></div>
             <div class="binding"><label><span data-ar="تلخيص" data-en="Summarize">تلخيص</span><select id="bindingSummarize"></select></label><label class="lock"><input id="lockSummarize" type="checkbox"> <span data-ar="قفل" data-en="Lock">قفل</span></label></div>
             <div class="binding"><label><span data-ar="فهم الإجراء" data-en="Actionize">فهم الإجراء</span><select id="bindingActionize"></select></label><label class="lock"><input id="lockActionize" type="checkbox"> <span data-ar="قفل" data-en="Lock">قفل</span></label></div>
             <div class="binding"><label><span data-ar="اقتراح الدالة" data-en="Function call">اقتراح الدالة</span><select id="bindingFunction"></select></label><label class="lock"><input id="lockFunction" type="checkbox"> <span data-ar="قفل" data-en="Lock">قفل</span></label></div>
             <div class="recipe-options">
               <label class="check"><input id="twoStage" type="checkbox"> <span data-ar="مرر عبر خطة دلالية قبل الاقتراح" data-en="Use semantic plan before proposal">مرر عبر خطة دلالية قبل الاقتراح</span></label>
-              <label class="check"><input id="summaryBranch" type="checkbox" checked> <span data-ar="نفّذ ملخصاً منفصلاً" data-en="Run separate summary">نفّذ ملخصاً منفصلاً</span></label>
+              <label class="check"><input id="summaryBranch" type="checkbox" checked> <span data-ar="نفّذ ملخص منفصل" data-en="Run separate summary">نفّذ ملخص منفصل</span></label>
             </div>
             <p class="small mono" id="stageGraph">transcribe → function_call</p>
-            <div class="button-row"><button id="saveRecipe" class="secondary" type="button" data-ar="حفظ الوصفة" data-en="Save recipe">حفظ الوصفة</button><select id="recipeSelect" aria-label="Recipe"></select></div>
+            <div class="button-row"><button id="saveRecipe" class="secondary" type="button" data-ar="حفظ الوصفة" data-en="Save recipe">حفظ الوصفة</button><select id="recipeSelect" aria-label="الوصفة" data-ar-label="الوصفة" data-en-label="Recipe"></select></div>
             <p id="bindingReason" class="small muted" data-ar="تظهر النماذج المحلية المتحقق منها هنا فقط. HUMAIN هو تفضيل مستقبلي، وليس مساراً قابلاً للتنفيذ اليوم." data-en="Only verified local models appear here. HUMAIN is a future preference, not an executable route today.">تظهر النماذج المحلية المتحقق منها هنا فقط. HUMAIN هو تفضيل مستقبلي، وليس مساراً قابلاً للتنفيذ اليوم.</p>
-            <div class="preflight small"><strong>HUMAIN Voice</strong> · Preferred hosted provider · <span class="mono">NOT EXECUTED — ZERO_SPEND_LOCAL</span><br><strong>OpenAI</strong> · Optional hosted provider · <span class="mono">NOT EXECUTED — ZERO_SPEND_LOCAL</span></div>
+            <div class="preflight small"><strong>HUMAIN Voice</strong> · <span data-ar="مزود مستضاف مفضّل" data-en="Preferred hosted provider">مزود مستضاف مفضّل</span> · <span class="mono">NOT EXECUTED — ZERO_SPEND_LOCAL</span><br><strong>OpenAI</strong> · <span data-ar="مزود مستضاف اختياري" data-en="Optional hosted provider">مزود مستضاف اختياري</span> · <span class="mono">NOT EXECUTED — ZERO_SPEND_LOCAL</span></div>
           </section>
         </div>
 
         <section class="panel optimization-panel">
-          <div class="panel-heading"><div><h3 data-ar="اختيار المسار" data-en="Route selection">اختيار المسار</h3><p data-ar="هذه الأزرار تعرض خطة محدودة أولاً؛ لا تبدأ أي مقارنة تلقائياً." data-en="These controls show a bounded plan first; no comparison starts automatically.">هذه الأزرار تعرض خطة محدودة أولاً؛ لا تبدأ أي مقارنة تلقائياً.</p></div><span class="badge">0 remote calls</span></div>
-          <div class="mode-buttons"><button data-mode="Cost" type="button"><b>Cost</b><small data-ar="أقل تكلفة معلومة" data-en="known marginal cost">أقل تكلفة معلومة</small></button><button data-mode="Speed" type="button"><b>Speed</b><small data-ar="أسرع مسار مقاس" data-en="measured end-to-end">أسرع مسار مقاس</small></button><button data-mode="Performance" type="button"><b>Performance</b><small data-ar="جودة المهمة" data-en="task quality">جودة المهمة</small></button><button data-mode="Manual" type="button"><b>Manual</b><small data-ar="لا تغيير تلقائي" data-en="no optimizer override">لا تغيير تلقائي</small></button></div>
-          <label class="field"><span data-ar="مجموعة التقييم" data-en="Evaluation set">مجموعة التقييم</span><select id="datasetSelect"><option value="AUTHORED_SMOKE_FIXTURE">AUTHORED_SMOKE_FIXTURE · deterministic boundary check</option><option value="SEED_HUMAN_EVAL">SEED_HUMAN_EVAL · human-reviewed local recordings</option></select></label>
+          <div class="panel-heading"><div><h3 data-ar="اختيار المسار" data-en="Route selection">اختيار المسار</h3><p data-ar="هذه الأزرار تعرض خطة محدودة أولاً؛ لا تبدأ أي مقارنة تلقائياً." data-en="These controls show a bounded plan first; no comparison starts automatically.">هذه الأزرار تعرض خطة محدودة أولاً؛ لا تبدأ أي مقارنة تلقائياً.</p></div><span class="badge" data-ar="0 استدعاء عن بعد" data-en="0 remote calls">0 استدعاء عن بعد</span></div>
+          <div class="mode-buttons"><button data-mode="Cost" type="button"><b data-ar="التكلفة" data-en="Cost">التكلفة</b><small data-ar="أقل تكلفة مالية معلومة" data-en="known marginal cost">أقل تكلفة مالية معلومة</small></button><button data-mode="Speed" type="button"><b data-ar="السرعة" data-en="Speed">السرعة</b><small data-ar="أسرع مسار مقاس" data-en="measured end-to-end">أسرع مسار مقاس</small></button><button data-mode="Performance" type="button"><b data-ar="الأداء" data-en="Performance">الأداء</b><small data-ar="جودة المهمة" data-en="task quality">جودة المهمة</small></button><button data-mode="Manual" type="button"><b data-ar="يدوي" data-en="Manual">يدوي</b><small data-ar="لا تغيير تلقائي" data-en="no optimizer override">لا تغيير تلقائي</small></button></div>
+          <label class="field"><span data-ar="مجموعة التقييم" data-en="Evaluation set">مجموعة التقييم</span><select id="datasetSelect"><option value="AUTHORED_SMOKE_FIXTURE" data-ar="AUTHORED_SMOKE_FIXTURE · فحص حدود ثابت" data-en="AUTHORED_SMOKE_FIXTURE · deterministic boundary check">AUTHORED_SMOKE_FIXTURE · فحص حدود ثابت</option><option value="SEED_HUMAN_EVAL" data-ar="SEED_HUMAN_EVAL · تسجيلات محلية راجعها بشر" data-en="SEED_HUMAN_EVAL · human-reviewed local recordings">SEED_HUMAN_EVAL · تسجيلات محلية راجعها بشر</option></select></label>
           <div id="preflight" class="preflight muted" data-ar="اختر معياراً لعرض المرشحين وحد استدعاءاتهم." data-en="Select a criterion to view candidates and their invocation cap.">اختر معياراً لعرض المرشحين وحد استدعاءاتهم.</div>
           <div class="button-row"><button id="startTournament" type="button" disabled data-ar="ابدأ المقارنة المعروضة" data-en="Start displayed comparison">ابدأ المقارنة المعروضة</button><button id="runWorkbench" class="primary" type="button" data-ar="تشغيل مساحة العمل" data-en="Run workbench">تشغيل مساحة العمل</button></div>
         </section>
@@ -100,26 +100,27 @@
       </section>
 
       <section id="tournaments" class="view">
-        <div class="view-title"><div><p class="eyebrow" data-ar="اختبارات محدودة مع أدلة صادقة" data-en="BOUNDED TESTS WITH HONEST EVIDENCE">اختبارات محدودة مع أدلة صادقة</p><h2 data-ar="المقارنات" data-en="Tournaments">المقارنات</h2></div><span class="status amber"><i></i> AUTHORED_SMOKE_FIXTURE</span></div>
+         <div class="view-title"><div><p class="eyebrow" data-ar="اختبارات محدودة مع أدلة صادقة" data-en="BOUNDED TESTS WITH HONEST EVIDENCE">اختبارات محدودة مع أدلة صادقة</p><h2 data-ar="المقارنات" data-en="Tournaments">المقارنات</h2></div><span class="status amber" data-status-code="AUTHORED_SMOKE_FIXTURE" data-status-tone="amber"><i></i><span class="status-label">اختبار حدود مُعدّ</span><span class="status-code mono">AUTHORED_SMOKE_FIXTURE</span></span></div>
         <section class="panel"><div class="panel-heading"><h3 data-ar="حالة المقارنة" data-en="Tournament status">حالة المقارنة</h3><button id="cancelTournament" type="button" class="danger" disabled data-ar="إلغاء" data-en="Cancel">إلغاء</button></div><div id="tournamentOutput" class="empty" data-ar="اعرض خطة من مساحة العمل، ثم ابدأها صراحة." data-en="Preview a plan in Workbench, then explicitly start it.">اعرض خطة من مساحة العمل، ثم ابدأها صراحة.</div></section>
         <section class="panel"><h3 data-ar="حدود الدليل" data-en="Evidence limits">حدود الدليل</h3><ul><li data-ar="الحالات مؤلفة للاختبار وليست تسجيلاً بشرياً أو معياراً سكانياً." data-en="Cases are authored smoke fixtures, not human recordings or population evidence.">الحالات مؤلفة للاختبار وليست تسجيلاً بشرياً أو معياراً سكانياً.</li><li data-ar="يُسجل وقت المسار كاملاً؛ لا تُعلن قيمة p95 من 12 حالة." data-en="Whole-route time is recorded; p95 is not asserted from 12 cases.">يُسجل وقت المسار كاملاً؛ لا تُعلن قيمة p95 من 12 حالة.</li><li data-ar="لا تُمزج أزمنة DEMO_RULES مع لوحة قياس نماذج حقيقية." data-en="DEMO_RULES timing is never mixed into a real-model leaderboard.">لا تُمزج أزمنة DEMO_RULES مع لوحة قياس نماذج حقيقية.</li></ul></section>
       </section>
 
       <section id="seed" class="view">
-        <div class="view-title"><div><p class="eyebrow" data-ar="مراجعة بشرية محلية فقط" data-en="LOCAL HUMAN REVIEW ONLY">مراجعة بشرية محلية فقط</p><h2 data-ar="مجموعة الصوت السعودية الأولية" data-en="Seed Saudi Speech Set">مجموعة الصوت السعودية الأولية</h2></div><span class="status amber"><i></i> SEED_HUMAN_EVAL</span></div>
-        <section class="panel"><div class="panel-heading"><div><h3 data-ar="التقاط حالة مُراجعة" data-en="Capture reviewed case">التقاط حالة مُراجعة</h3><p data-ar="سجّل أو ارفع الصوت من مساحة العمل أولاً، ثم اكتب مرجعك البشري هنا. لا يُنشأ أي ملصق تلقائياً." data-en="Record or upload in Workbench first, then enter your human reference here. No label is inferred automatically.">سجّل أو ارفع الصوت من مساحة العمل أولاً، ثم اكتب مرجعك البشري هنا. لا يُنشأ أي ملصق تلقائياً.</p></div><span id="seedRecordingState" class="badge">No recording selected</span></div>
-          <div class="panel-heading"><h3 data-ar="طابور السيناريوهات" data-en="Scenario queue">طابور السيناريوهات</h3><button id="refreshSeedScenarios" type="button" class="secondary" data-ar="تحديث السيناريوهات" data-en="Refresh scenarios">تحديث السيناريوهات</button></div><div id="scenarioQueue" class="small muted">No scenario selected.</div>
-          <div class="samples"><button type="button" data-seed-prompt="ذكرني الساعة سبعة... لا، ثمانية.">تصحيح</button><button type="button" data-seed-prompt="جهّز لي رسالة لأحمد بس لا ترسلها.">نفي</button><button type="button" data-seed-prompt="حط milk وبيض وprotein bars في المقاضي.">Code switch</button><button type="button" data-seed-prompt="ذكرني بكرة بعد المغرب.">وقت نسبي</button><button type="button" data-seed-prompt="أضفها للقائمة الثانية.">غموض</button></div>
-          <p id="seedPrompt" class="muted">Target: 20–30 short, personally reviewed utterances. This is not claimed to represent Saudi Arabia.</p>
-          <label class="field"><span data-ar="النص الحرفي الذي راجعته" data-en="Human-reviewed verbatim transcript">النص الحرفي الذي راجعته</span><textarea id="seedTranscript" rows="4" placeholder="اكتب ما قيل فعلاً، بما فيه العربية والإنجليزية والتصحيح."></textarea></label>
-          <div class="workbench-grid"><label class="field"><span>Expected status</span><select id="seedStatus"><option>READY</option><option>NEEDS_CLARIFICATION</option><option>NO_ACTION</option></select></label><label class="field"><span>Expected tool</span><select id="seedTool"><option value="create_note_draft">create_note_draft</option><option value="create_reminder_draft">create_reminder_draft</option><option value="add_list_items">add_list_items</option><option value="request_clarification">request_clarification</option><option value="">none</option></select></label></div>
+         <div class="view-title"><div><p class="eyebrow" data-ar="مراجعة بشرية محلية فقط" data-en="LOCAL HUMAN REVIEW ONLY">مراجعة بشرية محلية فقط</p><h2 data-ar="مجموعة الصوت السعودية الأولية" data-en="Seed Saudi Speech Set">مجموعة الصوت السعودية الأولية</h2></div><span class="status amber" data-status-code="SEED_HUMAN_EVAL" data-status-tone="amber"><i></i><span class="status-label">تقييم بشري أولي</span><span class="status-code mono">SEED_HUMAN_EVAL</span></span></div>
+         <section class="panel"><div class="panel-heading"><div><h3 data-ar="التقاط حالة مُراجعة" data-en="Capture reviewed case">التقاط حالة مُراجعة</h3><p data-ar="سجّل أو ارفع الصوت من مساحة العمل أولاً، ثم اكتب مرجعك البشري هنا. لا يُنشأ أي ملصق تلقائياً." data-en="Record or upload in Workbench first, then enter your human reference here. No label is inferred automatically.">سجّل أو ارفع الصوت من مساحة العمل أولاً، ثم اكتب مرجعك البشري هنا. لا يُنشأ أي ملصق تلقائياً.</p></div><span id="seedRecordingState" class="badge">لم يُحدّد تسجيل</span></div>
+           <div class="panel-heading"><h3 data-ar="طابور السيناريوهات" data-en="Scenario queue">طابور السيناريوهات</h3><button id="refreshSeedScenarios" type="button" class="secondary" data-ar="تحديث السيناريوهات" data-en="Refresh scenarios">تحديث السيناريوهات</button></div><div id="scenarioQueue" class="small muted">لم يُحدّد سيناريو.</div>
+            <div class="samples"><button type="button" data-seed-prompt="ذكرني الساعة سبعة... لا، ثمانية." data-ar="تصحيح" data-en="Correction">تصحيح</button><button type="button" data-seed-prompt="جهّز لي رسالة لأحمد بس لا ترسلها." data-ar="نفي" data-en="Negation">نفي</button><button type="button" data-seed-prompt="حط milk وبيض وprotein bars في المقاضي." data-ar="مزج العربية والإنجليزية" data-en="Arabic + English">مزج العربية والإنجليزية</button><button type="button" data-seed-prompt="ذكرني بكرة بعد المغرب." data-ar="وقت نسبي" data-en="Relative time">وقت نسبي</button><button type="button" data-seed-prompt="أضفها للقائمة الثانية." data-ar="غموض" data-en="Ambiguity">غموض</button></div>
+            <p id="seedPrompt" class="muted" data-ar="الهدف: 20–30 عبارة قصيرة راجعها أشخاص بعينهم. لا يُدّعى أنها تمثل السعودية." data-en="Target: 20–30 short utterances reviewed by specific people. This is not claimed to represent Saudi Arabia.">الهدف: 20–30 عبارة قصيرة راجعها أشخاص بعينهم. لا يُدّعى أنها تمثل السعودية.</p>
+           <label class="field"><span data-ar="النص الحرفي الذي راجعته" data-en="Human-reviewed verbatim transcript">النص الحرفي الذي راجعته</span><textarea id="seedTranscript" rows="4" data-ar-placeholder="اكتب ما قيل فعلاً، بما فيه العربية والإنجليزية والتصحيح." data-en-placeholder="Enter exactly what was said, including Arabic, English, and corrections." placeholder="اكتب ما قيل فعلاً، بما فيه العربية والإنجليزية والتصحيح."></textarea></label>
+            <div class="workbench-grid"><label class="field"><span data-ar="الحالة المتوقعة" data-en="Expected status">الحالة المتوقعة</span><select id="seedStatus"><option value="READY" data-ar="جاهز (READY)" data-en="Ready (READY)">جاهز (READY)</option><option value="NEEDS_CLARIFICATION" data-ar="يتطلب توضيحًا (NEEDS_CLARIFICATION)" data-en="Needs clarification (NEEDS_CLARIFICATION)">يتطلب توضيحًا (NEEDS_CLARIFICATION)</option><option value="NO_ACTION" data-ar="لا إجراء (NO_ACTION)" data-en="No action (NO_ACTION)">لا إجراء (NO_ACTION)</option></select></label><label class="field"><span data-ar="الأداة المتوقعة" data-en="Expected tool">الأداة المتوقعة</span><select id="seedTool"><option value="create_note_draft">create_note_draft</option><option value="create_reminder_draft">create_reminder_draft</option><option value="add_list_items">add_list_items</option><option value="request_clarification">request_clarification</option><option value="" data-ar="لا توجد أداة (none)" data-en="No tool (none)">لا توجد أداة (none)</option></select></label></div>
           <label class="field"><span data-ar="وسائط متوقعة بصيغة JSON" data-en="Expected arguments as JSON">وسائط متوقعة بصيغة JSON</span><textarea id="seedArguments" rows="3">{}</textarea></label>
-          <label class="check"><input id="seedClarification" type="checkbox"> <span data-ar="هذه الحالة يجب أن تطلب توضيحاً" data-en="This case should require clarification">هذه الحالة يجب أن تطلب توضيحاً</span></label>
+          <label class="check"><input id="seedClarification" type="checkbox"> <span data-ar="هذه الحالة يجب أن تطلب توضيح" data-en="This case should require clarification">هذه الحالة يجب أن تطلب توضيح</span></label>
+          <label class="check"><input id="seedSemanticReviewed" type="checkbox"> <span data-ar="راجعت المرجع الدلالي والنتيجة المتوقعة" data-en="I reviewed the semantic reference and expected outcome">راجعت المرجع الدلالي والنتيجة المتوقعة</span></label>
           <label class="field"><span data-ar="المقاطع الحرجة JSON (مثال: [{\"text\":\"ثمانية\",\"label\":\"CORRECTION_ERROR\"}])" data-en="Critical spans JSON (e.g. [{\"text\":\"eight\",\"label\":\"CORRECTION_ERROR\"}])">المقاطع الحرجة JSON</span><textarea id="seedCriticalSpans" rows="3">[]</textarea></label>
-          <div class="workbench-grid"><label class="field"><span data-ar="معرّف المراجع" data-en="Reviewer ID">معرّف المراجع</span><input id="seedReviewer" placeholder="optional local label"></label><label class="field"><span data-ar="جلسة التسجيل" data-en="Recording session">جلسة التسجيل</span><input id="seedSession" placeholder="e.g. home-evening-01"></label></div>
+           <div class="workbench-grid"><label class="field"><span data-ar="معرّف المراجع" data-en="Reviewer ID">معرّف المراجع</span><input id="seedReviewer" placeholder="وسم محلي اختياري"></label><label class="field"><span data-ar="جلسة التسجيل" data-en="Recording session">جلسة التسجيل</span><input id="seedSession" placeholder="مثال: home-evening-01"></label></div>
           <label class="field"><span data-ar="ملاحظات" data-en="Notes">ملاحظات</span><input id="seedNotes" maxlength="1000"></label><div class="button-row"><button id="saveSeedCase" type="button" data-ar="حفظ كمرجع بشري" data-en="Save as human reference">حفظ كمرجع بشري</button><button id="compareRecording" type="button" class="secondary" data-ar="قارن نماذج التفريغ" data-en="Compare transcription models">قارن نماذج التفريغ</button><button id="refreshSeedCases" type="button" class="secondary" data-ar="تحديث الحالات" data-en="Refresh cases">تحديث الحالات</button></div>
         </section>
-        <section class="panel"><h3 data-ar="الحالات المحفوظة" data-en="Saved cases">الحالات المحفوظة</h3><pre id="seedCasesOutput" class="muted">No human-reviewed cases yet.</pre></section>
+         <section class="panel"><h3 data-ar="الحالات المحفوظة" data-en="Saved cases">الحالات المحفوظة</h3><pre id="seedCasesOutput" class="muted">لا توجد حالات راجعها بشر بعد.</pre></section>
         <section class="panel"><h3 data-ar="مقارنة التفريغ جنباً إلى جنب" data-en="Side-by-side transcription review">مقارنة التفريغ جنباً إلى جنب</h3><div id="sttCompareOutput" class="empty">—</div></section>
       </section>
 

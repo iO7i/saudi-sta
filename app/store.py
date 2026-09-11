@@ -42,7 +42,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS records (
                   id TEXT PRIMARY KEY, original_text TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL,
                   recording_name TEXT, outputs TEXT NOT NULL, permissions TEXT NOT NULL, label_state TEXT NOT NULL,
-                  review TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                  review TEXT NOT NULL, review_state TEXT NOT NULL DEFAULT 'RECORDED', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS sandbox (
                   id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL
@@ -56,11 +56,17 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS seed_human_cases (
                   id TEXT PRIMARY KEY, recording_id TEXT NOT NULL UNIQUE, reviewed_transcript TEXT NOT NULL,
-                  expected TEXT NOT NULL, provenance TEXT NOT NULL,
+                  expected TEXT NOT NULL, provenance TEXT NOT NULL, review_state TEXT NOT NULL DEFAULT 'HUMAN_TRANSCRIPT_REVIEWED',
                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 """
             )
+            record_columns = {row[1] for row in conn.execute("PRAGMA table_info(records)").fetchall()}
+            if "review_state" not in record_columns:
+                conn.execute("ALTER TABLE records ADD COLUMN review_state TEXT NOT NULL DEFAULT 'RECORDED'")
+            seed_columns = {row[1] for row in conn.execute("PRAGMA table_info(seed_human_cases)").fetchall()}
+            if "review_state" not in seed_columns:
+                conn.execute("ALTER TABLE seed_human_cases ADD COLUMN review_state TEXT NOT NULL DEFAULT 'HUMAN_TRANSCRIPT_REVIEWED'")
             conn.execute(
                 "INSERT OR IGNORE INTO sandbox(id, body) VALUES(1, ?)",
                 (json.dumps({"notes": [], "reminders": [], "lists": {}, "applied_proposal_ids": []}),),
@@ -105,12 +111,13 @@ class Store:
             "provider_output_training_terms": "unknown",
         }
         review = {"reviewer_type": "unknown", "reviewer_identity": None, "promotion_reason": None}
+        review_state = "MODEL_TRANSCRIBED" if outputs.get("transcription") else "RECORDED"
         with self._connect() as conn:
             conn.execute(
-                """INSERT INTO records(id, original_text, text, revision, recording_name, outputs, permissions, label_state, review)
-                VALUES (?, ?, ?, 1, ?, ?, ?, 'CANDIDATE', ?)""",
+                """INSERT INTO records(id, original_text, text, revision, recording_name, outputs, permissions, label_state, review, review_state)
+                VALUES (?, ?, ?, 1, ?, ?, ?, 'CANDIDATE', ?, ?)""",
                 (record_id, original_text if original_text is not None else text, text, recording_name,
-                 self._dump(outputs), self._dump(permissions), self._dump(review)),
+                 self._dump(outputs), self._dump(permissions), self._dump(review), review_state),
             )
         return record_id
 
@@ -138,6 +145,8 @@ class Store:
         if record["revision"] != expected_revision:
             raise ValueError("REVISION_CONFLICT")
         outputs = record["outputs"]
+        edits = outputs.setdefault("transcript_edit_history", [])
+        edits.append({"from_revision": expected_revision, "original_text": record["text"], "edited_text": text})
         outputs["stale"] = True
         outputs["stale_reason"] = "Transcript was edited; summary, plan, and proposal refer to an older source revision."
         with self._connect() as conn:
@@ -148,10 +157,16 @@ class Store:
         return self.get_record(record_id)
 
     def update_review(self, record_id: str, review: dict[str, Any], label_state: str) -> dict[str, Any] | None:
+        current = self.get_record(record_id)
+        if not current:
+            return None
+        review_state = current.get("review_state", "RECORDED")
+        if review.get("reviewer_type") == "human":
+            review_state = "HUMAN_TRANSCRIPT_REVIEWED"
         with self._connect() as conn:
             result = conn.execute(
-                "UPDATE records SET review=?, label_state=? WHERE id=?",
-                (self._dump(review), label_state, record_id),
+                "UPDATE records SET review=?, label_state=?, review_state=? WHERE id=?",
+                (self._dump(review), label_state, review_state, record_id),
             )
         return self.get_record(record_id) if result.rowcount else None
 
@@ -219,12 +234,12 @@ class Store:
         recording = self.recording(recording_id)
         return self.audio_path(recording["filename"]) if recording else None
 
-    def save_seed_human_case(self, recording_id: str, reviewed_transcript: str, expected: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
+    def save_seed_human_case(self, recording_id: str, reviewed_transcript: str, expected: dict[str, Any], provenance: dict[str, Any], review_state: str = "HUMAN_TRANSCRIPT_REVIEWED") -> dict[str, Any]:
         case_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO seed_human_cases(id, recording_id, reviewed_transcript, expected, provenance) VALUES (?, ?, ?, ?, ?)",
-                (case_id, recording_id, reviewed_transcript, self._dump(expected), self._dump(provenance)),
+                "INSERT INTO seed_human_cases(id, recording_id, reviewed_transcript, expected, provenance, review_state) VALUES (?, ?, ?, ?, ?, ?)",
+                (case_id, recording_id, reviewed_transcript, self._dump(expected), self._dump(provenance), review_state),
             )
         return self.get_seed_human_case(case_id)  # type: ignore[return-value]
 
@@ -235,6 +250,7 @@ class Store:
         body["provenance"] = json.loads(body["provenance"])
         body["evidence_type"] = "HUMAN_REVIEWED"
         body["dataset_id"] = "SEED_HUMAN_EVAL"
+        body.setdefault("review_state", "HUMAN_TRANSCRIPT_REVIEWED")
         return body
 
     def get_seed_human_case(self, case_id: str) -> dict[str, Any] | None:

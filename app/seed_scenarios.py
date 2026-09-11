@@ -13,14 +13,14 @@ SEED_SCENARIOS = [
     {"id": "spoken_three_half", "intent": "note with decimal", "example": "سجل ثلاثة ونص في الملاحظة.", "facts": ["3.5"]},
     {"id": "spoken_twenty_five", "intent": "quantity with spoken number", "example": "أضف خمسة وعشرين حبة.", "facts": ["25"]},
     {"id": "decimal_english", "intent": "record an English decimal", "example": "سجل 3.5 في الملاحظة.", "facts": ["3.5"]},
-    {"id": "phone_like_digits", "intent": "preserve identifier-like digits", "example": "دوّن ٠٥٠١٢٣٤٥٦٧ بدون تعديل.", "facts": ["digit sequence preserved"]},
+    {"id": "phone_like_digits", "intent": "preserve identifier-like digits", "example": "دوّن 0501234567 بدون تعديل.", "facts": ["digit sequence preserved"]},
     {"id": "name_arabic", "intent": "message draft with Arabic name", "example": "اكتب لمحمد إني بتأخر.", "facts": ["recipient محمد", "draft only"]},
     {"id": "name_english", "intent": "message draft with English name", "example": "جهز رسالة لـ Sarah، بوصّل بعد عشر دقايق.", "facts": ["recipient Sarah", "draft only"]},
     {"id": "list_three_items", "intent": "add three Arabic items", "example": "حط خبز وحليب وطماطم في المقاضي.", "facts": ["three list items"]},
     {"id": "remove_list_item", "intent": "remove an item from a list", "example": "شِل البيض من قائمة المقاضي.", "facts": ["remove eggs"]},
     {"id": "reminder_morning", "intent": "morning reminder", "example": "ذكرني الساعة تسعة الصباح أرسل الفاتورة.", "facts": ["nine AM", "send invoice"]},
     {"id": "reminder_evening", "intent": "evening reminder", "example": "ذكرني الساعة ثمانية الليل أراجع العقد.", "facts": ["eight PM", "review contract"]},
-    {"id": "date_explicit", "intent": "dated reminder", "example": "ذكرني يوم ١٥ أكتوبر أراجع التأمين.", "facts": ["15 October", "review insurance"]},
+    {"id": "date_explicit", "intent": "dated reminder", "example": "ذكرني يوم 15 أكتوبر أراجع التأمين.", "facts": ["15 October", "review insurance"]},
     {"id": "hesitation", "intent": "note after hesitation", "example": "آه... اكتب ملاحظة إن الاجتماع اتأجل.", "facts": ["note", "meeting postponed"]},
     {"id": "summary_only", "intent": "summary without action", "example": "لا تسوي تذكير، بس لخص الكلام.", "facts": ["summary only", "no tool"]},
     {"id": "action_mention_not_request", "intent": "mention an action without requesting it", "example": "كنت أفكر أضيفها للقائمة، بس خلها الآن.", "facts": ["no list mutation"]},
@@ -36,3 +36,34 @@ SEED_SCENARIOS = [
     {"id": "english_numbers", "intent": "English number embedded in Arabic", "example": "أضف twenty-five قطعة للقائمة.", "facts": ["25"]},
     {"id": "not_a_request", "intent": "statement only", "example": "أنا عادة أراجع المهام بعد المغرب.", "facts": ["no action"]},
 ]
+
+
+def _expected_outcome(intent: str) -> str:
+    lowered = intent.lower()
+    if "clarif" in lowered or "ambiguous" in lowered or "missing" in lowered:
+        return "Ask for clarification before taking action."
+    if "summary" in lowered:
+        return "Summary only; no sandbox action."
+    if "remove" in lowered:
+        return "Remove only the explicitly named list item."
+    if "negative" in lowered or "not a request" in lowered or "mention" in lowered:
+        return "No action; preserve the statement or negation."
+    if "message" in lowered or "draft" in lowered:
+        return "Create a local draft only; never send externally."
+    if "reminder" in lowered:
+        return "Create a reminder draft only when all required fields are known."
+    if "list" in lowered:
+        return "Apply the explicitly requested list operation."
+    if "note" in lowered or "record" in lowered:
+        return "Create a local note draft preserving the stated facts."
+    return "Preserve the stated facts and avoid unsupported action."
+
+
+for _scenario in SEED_SCENARIOS:
+    _scenario["semantic_facts"] = list(_scenario["facts"])
+    _scenario["expected_broad_outcome"] = _expected_outcome(_scenario["intent"])
+    _scenario["clarification_may_be_required"] = any(
+        marker in _scenario["intent"].lower()
+        for marker in ("clarif", "ambiguous", "missing", "relative", "time")
+    )
+    _scenario["example_is_optional"] = True
