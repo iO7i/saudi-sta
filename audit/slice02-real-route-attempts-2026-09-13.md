@@ -73,3 +73,27 @@ utterance that directly requests a supported local operation, for example:
 Then review the verbatim transcript and expected `add_list_items` arguments in
 the Seed Saudi Speech Set UI. Do not label the current physical/external-action
 recordings as successful sandbox actions.
+
+## Follow-up recordings 7–12
+
+The same Audar Q4 bridge transcribed six additional local recordings. Hashes,
+durations, and outputs are retained here so these observations remain separate
+from human-reviewed gold labels:
+
+| File | Duration (s) | SHA-256 | Audar Q4 transcript / observation |
+|---|---:|---|---|
+| `Recording (7).m4a` | 9.088 | `b73e1765bd616b792a0185869d44919350a4733ea982415789b56bbe810a79f6` | `<REDACTED_PRIVATE_TRANSCRIPT>` — mixed list/note wording; clarification required |
+| `Recording (8).m4a` | 14.379 | `85a631def5988f9cad0c664db7a2fa4d16f206cbada17040f77842472ca434dc` | `ممكن تسجل ملاحظة يعني او تكتب ملاحظة في جوالك اسجل عندك رقم جوالي <REDACTED_PHONE>` — note intent, content boundary ambiguous |
+| `Recording (9).m4a` | 9.344 | `a45d181e8c2aa0098a34149d7b63fd77dc779e6036beef2a48d51902dd4212e0` | `<REDACTED_PRIVATE_TRANSCRIPT>` — external group/invite request |
+| `Recording (10).m4a` | 12.011 | `fe076ee72dfdc4bdadc42e04a29894c043a2b04c37fda2aee1bdc4626d48ba8a` | `<REDACTED_PRIVATE_TRANSCRIPT>` — draft request with missing content |
+| `Recording (11).m4a` | 9.408 | `978a220b7376c342f795274bf65e1e616a95e78782afbecdcdd88f01be37bee0` | `<REDACTED_PRIVATE_TRANSCRIPT>` — no supported sandbox action |
+| `Recording (12).m4a` | 6.101 | `ca2150ac429b77c276f72f862f9e265f439d208c3990bdbf63973d36e6a8d4e0` | `<REDACTED_PRIVATE_TRANSCRIPT>` — calculation/save request outside the current tool set |
+
+Two bounded real routes were then executed with the Q4 transcript and Qwen
+Q6_K_L direct function-call recipe. Recording (8) produced a strict,
+schema-valid `request_clarification` proposal asking for `note_content`;
+Recording (7) produced a strict, schema-valid clarification asking for
+`list_name`, the unresolved “سوي كذا” action, and `note_content`. Neither route
+was Apply-eligible, so sandbox state was intentionally unchanged. Qwen's raw
+responses, artifact hash, runtime, and stage latencies are retained in the
+local SQLite route records under the configured runtime data directory.
