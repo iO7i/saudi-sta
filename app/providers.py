@@ -39,7 +39,7 @@ class LocalArtifactRegistry:
     def __init__(self, manifest_path: str | None = None) -> None:
         configured = manifest_path or os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFEST")
         configured_many = os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFESTS")
-        default_paths = [Path("D:/saudi-sta-models/saudi-sta-local-models.json"), Path("D:/models/whisper/saudi-sta-local-models.json"), Path("D:/models/audar/Audar-ASR-V1-Turbo/saudi-sta-audar-q4-manifest.json"), Path("D:/models/_downloads/manifest.json")]
+        default_paths = [Path("D:/saudi-sta-models/saudi-sta-local-models.json"), Path("D:/models/whisper/saudi-sta-local-models.json"), Path("D:/models/audar/Audar-ASR-V1-Turbo/saudi-sta-audar-q4-manifest.json"), Path("D:/models/qwen/Qwen3.8-27B-Q6_K_L/saudi-sta-qwen38-manifest.json"), Path("D:/models/_downloads/manifest.json")]
         raw_paths = ([configured] if configured else []) + ([item for item in configured_many.split(os.pathsep) if item] if configured_many else [])
         if not raw_paths:
             raw_paths.extend(str(path) for path in default_paths if path.is_file())
@@ -59,6 +59,11 @@ class LocalArtifactRegistry:
         result: list[dict[str, Any]] = []
         for manifest in self.manifest_paths:
             path = Path(manifest)
+            # The downloader manifest is operational queue state, not a
+            # provider/model manifest.  It is consumed by the passive model
+            # scanner, but must not create a second runtime candidate here.
+            if path.name.lower() == "manifest.json" and path.parent.name.lower() == "_downloads":
+                continue
             if not path.is_file():
                 continue
             try:
@@ -621,10 +626,11 @@ class LlamaCppAdapter:
         entry = self._entry(binding)
         if not entry:
             return {"available": False, "reason": "UNAVAILABLE_LOCAL_MODEL: verified local GGUF manifest entry is required"}
-        if importlib.util.find_spec("llama_cpp") is None:
-            return {"available": False, "reason": "UNAVAILABLE_LOCAL_MODEL: llama-cpp-python runtime is not installed"}
+        runtime_path = Path(str(entry.get("runtime_path", "")))
+        if not runtime_path.is_file() and importlib.util.find_spec("llama_cpp") is None:
+            return {"available": False, "reason": "UNAVAILABLE_LOCAL_MODEL: llama.cpp CLI or llama-cpp-python runtime is not installed"}
         valid, reason, artifacts = self.registry.verify(entry)
-        return {"available": valid, "reason": None if valid else f"UNAVAILABLE_LOCAL_MODEL: {reason}", "artifacts": artifacts if valid else []}
+        return {"available": valid, "reason": None if valid else f"UNAVAILABLE_LOCAL_MODEL: {reason}", "artifacts": artifacts if valid else [], "runtime_path": str(runtime_path) if runtime_path.is_file() else None}
 
     def discover(self) -> list[RoleBinding]:
         bindings: list[RoleBinding] = []
@@ -634,6 +640,7 @@ class LlamaCppAdapter:
                 prompt_version="", schema_version="", execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.UNKNOWN,
             ))
             roles = entry.get("roles", ["summarize", "actionize", "function_call"])
+            verified_capabilities = [str(item) for item in entry.get("capabilities_verified", []) if item]
             for role_value in roles:
                 if role_value not in {"summarize", "actionize", "function_call", "verify"}:
                     continue
@@ -642,11 +649,11 @@ class LlamaCppAdapter:
                     id=f"{self.provider}:{entry['id']}:{role.value}", provider=self.provider, model_id=str(entry["id"]),
                     revision_or_digest=f"{entry.get('revision') or entry.get('digest') or 'unknown'};{entry.get('artifacts', [{}])[0].get('sha256', 'unknown')}", role=role,
                     prompt_version="qwen-json-v1", schema_version="sta-v2",
-                    generation={"temperature": 0, "seed": 7, "max_tokens": 500, "runtime": "llama-cpp-python", "quantization": entry.get("quantization")},
+                    generation={"temperature": 0, "seed": 7, "max_tokens": int(entry.get("max_tokens", 160)), "runtime": entry.get("runtime", "llama.cpp-cli"), "quantization": entry.get("quantization") or entry.get("precision")},
                     execution_mode=ExecutionMode.LOCAL,
                     capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
-                    capabilities=[role.value, "structured_json", "tool_selection"] if status["available"] else [],
-                    available=status["available"], unavailable_reason=status["reason"], tool_mode="STRUCTURED_TOOL_EMULATION" if role == Role.FUNCTION_CALL else "NONE",
+                    capabilities=verified_capabilities if status["available"] else [],
+                    available=status["available"], unavailable_reason=status["reason"], tool_mode="JSON_EMULATION" if role == Role.FUNCTION_CALL else "NONE",
                     artifact_hashes=[str(item.get("sha256")) for item in status.get("artifacts", []) if item.get("sha256")],
                 ))
         return bindings
@@ -729,6 +736,92 @@ class LlamaCppAdapter:
             "tool_mode": binding.tool_mode,
         }
 
+    @staticmethod
+    def _cli_content(stdout: str, stderr: str = "") -> str:
+        """Extract the assistant completion while retaining raw diagnostics separately."""
+        raw = stdout or ""
+        if "\n> " in raw:
+            raw = raw.split("\n> ", 1)[1]
+        elif raw.startswith("> "):
+            raw = raw[2:]
+        for marker in ("\n[ Prompt", "\nExiting...", "\navailable commands:"):
+            if marker in raw:
+                raw = raw.split(marker, 1)[0]
+        lines = []
+        for line in raw.splitlines():
+            value = line.strip()
+            if not value or value.startswith(("Loading model", "build      :", "model      :", "ftype      :", "modalities :", "using custom system prompt")):
+                continue
+            lines.append(value)
+        return "\n".join(lines).strip()
+
+    def _invoke_cli(
+        self,
+        binding: RoleBinding,
+        entry: dict[str, Any],
+        status: dict[str, Any],
+        messages: list[dict[str, str]],
+        *,
+        timeout_seconds: float | None,
+        cancel_event: threading.Event | None,
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        runtime_path = Path(str(entry.get("runtime_path", "")))
+        if not runtime_path.is_file():
+            raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: configured llama.cpp CLI is missing")
+        artifact = entry.get("artifacts", [{}])[0]
+        model_path = Path(str(artifact.get("path", "")))
+        system = next((str(message.get("content", "")) for message in messages if message.get("role") == "system"), "")
+        user = next((str(message.get("content", "")) for message in reversed(messages) if message.get("role") == "user"), "")
+        command = [str(runtime_path), "-m", str(model_path), "-c", str(entry.get("context_window", 4096)), "-n", str(binding.generation.get("max_tokens", 160)),
+                   "-t", str(entry.get("threads", 8)), "--no-display-prompt", "--simple-io", "--single-turn", "--no-context-shift", "--temp", str(binding.generation.get("temperature", 0)),
+                   "--reasoning", "off", "--reasoning-budget", "0"]
+        if system:
+            command.extend(["-sys", system])
+        command.extend(["-p", user])
+        started = time.perf_counter()
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
+                                   env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+        deadline = time.monotonic() + float(timeout_seconds or entry.get("timeout_seconds", 600))
+        try:
+            while process.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    raise LocalModelUnavailable("LOCAL_GGUF_CANCELLED")
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, float(timeout_seconds or entry.get("timeout_seconds", 600)))
+                time.sleep(0.2)
+            stdout, stderr = process.communicate()
+        except (subprocess.TimeoutExpired, LocalModelUnavailable) as exc:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+            else:
+                process.kill()
+            process.communicate()
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise LocalModelUnavailable("LOCAL_GGUF_TIMEOUT") from exc
+            raise
+        elapsed = (time.perf_counter() - started) * 1000
+        if process.returncode != 0:
+            raise LocalModelUnavailable(f"LOCAL_GGUF_INFERENCE_FAILED:exit={process.returncode}")
+        content = self._cli_content(stdout, stderr)
+        # Some llama.cpp builds echo the `-p` prompt even with
+        # `--no-display-prompt`.  Remove that exact echo before the strict
+        # JSON parser sees the completion; the untouched stdout is retained
+        # in runtime metrics for provenance.
+        if user and user in content:
+            content = content.split(user, 1)[-1].strip()
+        return {"content": content, "tool_calls": [], "runtime_metrics": {
+            "runtime": "llama.cpp-cli", "execution_mode": "cpu", "request_type": "chat_completion_cli", "cold_start": True,
+            "model_load_ms": None, "inference_latency_ms": elapsed, "total_latency_ms": elapsed, "prompt_tokens": None,
+            "completion_tokens": None, "tokens_per_second": None, "artifact_bytes": sum(item["bytes"] for item in status.get("artifacts", [])),
+            "peak_ram_or_vram": None, "context": context or {}, "context_window": entry.get("context_window"),
+            "reasoning": "off", "model_id": binding.model_id, "revision_or_digest": binding.revision_or_digest,
+            "schema_version": binding.schema_version, "prompt_version": binding.prompt_version,
+            "artifact_hashes": list(getattr(binding, "artifact_hashes", []) or []), "tool_mode": binding.tool_mode,
+            "runtime_path": str(runtime_path), "stderr": stderr[-2000:],
+            "raw_model_output": stdout[-10000:],
+        }}
+
     def invoke(
         self,
         binding: RoleBinding,
@@ -746,6 +839,9 @@ class LlamaCppAdapter:
         assert_dispatch_allowed(self.provider, artifact_verified=True)
         entry = self._entry(binding)
         assert entry is not None
+        status_runtime = Path(str(entry.get("runtime_path", "")))
+        if status_runtime.is_file():
+            return self._invoke_cli(binding, entry, status, messages, timeout_seconds=timeout_seconds, cancel_event=cancel_event, context=context)
         cold_start = self._load(entry)
         started = time.perf_counter()
         try:

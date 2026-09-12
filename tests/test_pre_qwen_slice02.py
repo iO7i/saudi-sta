@@ -7,11 +7,11 @@ stands in for runtime certification evidence or a human speech reference.
 import hashlib
 import json
 
-from app.engine import apply_to_sandbox
+from app.engine import Engine, apply_to_sandbox
 from app.model_registry import scan_models
 from app.providers import LlamaCppAdapter, LocalArtifactRegistry
 from app.qwen_certification import QWEN_CERTIFICATION_CASES, evaluate_qwen_output, qwen_route_experiment_plan
-from app.schemas import CapabilityProvenance, ExecutionMode, Role, RoleBinding, ToolProposal
+from app.schemas import CapabilityProvenance, ExecutionMode, Recipe, Role, RoleBinding, ToolProposal
 from app.store import Store
 from app.stt_tournament import run_stt_tournament
 
@@ -132,3 +132,26 @@ def test_gguf_fixture_keeps_native_and_structured_tool_modes_distinct(monkeypatc
     assert "response_format" in fixture_model.requests[-1] and "tools" not in fixture_model.requests[-1]
     adapter.invoke(native, [{"role": "user", "content": "x"}], json_schema={"type": "object"}, tools=tools)
     assert "tools" in fixture_model.requests[-1] and "response_format" not in fixture_model.requests[-1]
+
+
+def test_cli_content_strips_llama_prompt_echo_and_keeps_json():
+    content = LlamaCppAdapter._cli_content("Loading model...\n> Source text: hello\n{\"status\":\"READY\"}\n")
+    assert content == 'Source text: hello\n{"status":"READY"}'
+
+
+def test_engine_normalizes_tool_alias_from_real_json_emulation_shape():
+    binding = RoleBinding(
+        id="qwen:function_call", provider="llama_cpp_local", model_id="qwen",
+        revision_or_digest="rev;hash", role=Role.FUNCTION_CALL, prompt_version="p1",
+        schema_version="sta-v2", execution_mode=ExecutionMode.LOCAL,
+        capability_provenance=CapabilityProvenance.VERIFIED_LOCAL,
+        available=True, tool_mode="JSON_EMULATION",
+    )
+
+    class Adapter:
+        def invoke(self, *_args, **_kwargs):
+            return {"content": '{"tool":"add_list_items","arguments":{"list_name":"المقاضي","items":["milk"]},"needs_clarification":false}', "runtime_metrics": {"runtime": "fixture"}}
+
+    recipe = Recipe(id="qwen-direct", name="Qwen direct", action_mode="DIRECT", summary_branch=False, graph=["function_call"], bindings={"function_call": binding}, required_outputs=["proposal"])
+    result = Engine(local_text_adapter=Adapter()).run(recipe, "حط milk في المقاضي", "2026-09-12T09:00:00+03:00")
+    assert result.outputs["proposal"]["tool_name"] == "add_list_items"

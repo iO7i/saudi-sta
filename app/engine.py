@@ -447,6 +447,13 @@ class Engine:
                 payload = self._parse_json(raw["content"])
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise ValueError("INVALID_OUTPUT: invalid local tool proposal") from exc
+        # JSON-emulation models sometimes call the tool key `tool` rather
+        # than the contract's `tool_name`.  Normalize that harmless alias,
+        # while leaving the original raw output in provider provenance.
+        if "tool_name" not in payload and isinstance(payload.get("tool"), str):
+            payload["tool_name"] = payload.pop("tool")
+        needs_clarification = bool(payload.pop("needs_clarification", False))
+        payload.setdefault("status", "NEEDS_CLARIFICATION" if needs_clarification else "READY")
         payload.update({
             "id": str(uuid.uuid4()), "source_revision": source_revision, "supporting_spans": [span_for(text)],
             "missing_fields": payload.get("missing_fields", []),

@@ -100,7 +100,7 @@ def test_seed_scenario_queue_is_prompt_only_and_catalog_keeps_audar_precisions_d
     assert {binding["model_id"] for binding in audar} >= {"AUDAR_TURBO_Q4_LOCAL_BRIDGE", "AUDAR_TURBO_Q8_LOCAL", "AUDAR_FLASH_Q8_LOCAL"}
 
 
-def test_catalog_exposes_passive_optional_stage_evidence_and_qwen_waiting_state():
+def test_catalog_exposes_passive_optional_stage_evidence_and_qwen_artifact_state():
     catalog = client.get("/api/catalog")
     assert catalog.status_code == 200
     stages = {item["stage"]: item for item in catalog.json()["stage_capabilities"]["stages"]}
@@ -108,7 +108,9 @@ def test_catalog_exposes_passive_optional_stage_evidence_and_qwen_waiting_state(
     assert all(item["capability_state"] == "CAPABILITY_PENDING" for item in stages.values())
     qwen = client.get("/api/qwen-certification")
     assert qwen.status_code == 200
-    assert qwen.json()["status"] == "WAITING_FOR_QWEN_ARTIFACT"
+    assert qwen.json()["status"] in {"WAITING_FOR_QWEN_ARTIFACT", "READY_TO_CERTIFY", "CAPABILITY_CERTIFIED", "ROLE_PROBE_FAILED"}
+    if any(item["provider"] == "llama_cpp_local" and item["model_id"] == "QWEN38_27B_Q6_K_L" and item["available"] for item in catalog.json()["bindings"]):
+        assert qwen.json()["status"] in {"READY_TO_CERTIFY", "CAPABILITY_CERTIFIED", "ROLE_PROBE_FAILED"}
 
 
 def test_seed_human_case_is_explicit_and_separate_from_smoke_fixtures():
