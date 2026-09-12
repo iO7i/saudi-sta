@@ -160,6 +160,12 @@ class Store:
             )
         return self.get_record(record_id)
 
+    def update_record_outputs(self, record_id: str, outputs: dict[str, Any]) -> dict[str, Any] | None:
+        """Persist append-only route/apply evidence without changing the transcript revision."""
+        with self._connect() as conn:
+            result = conn.execute("UPDATE records SET outputs=? WHERE id=?", (self._dump(outputs), record_id))
+        return self.get_record(record_id) if result.rowcount else None
+
     def update_review(self, record_id: str, review: dict[str, Any], label_state: str) -> dict[str, Any] | None:
         current = self.get_record(record_id)
         if not current:

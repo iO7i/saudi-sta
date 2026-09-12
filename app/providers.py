@@ -6,7 +6,9 @@ import inspect
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -31,6 +33,22 @@ OFFICIAL_SOURCES = {
 
 class LocalModelUnavailable(RuntimeError):
     pass
+
+
+def _cleanup_temp_path(path: Path) -> None:
+    """Best-effort cleanup for Windows multimedia child processes that release handles late."""
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        def retry() -> None:
+            for _ in range(12):
+                time.sleep(0.5)
+                try:
+                    path.unlink(missing_ok=True)
+                    return
+                except PermissionError:
+                    continue
+        threading.Thread(target=retry, daemon=True, name="saudi-sta-audio-cleanup").start()
 
 
 class LocalArtifactRegistry:
@@ -413,7 +431,7 @@ class TransformersWhisperAdapter:
             self._pipeline, self._loaded_key = None, None
             raise LocalModelUnavailable(f"LOCAL_WHISPER_LOAD_FAILED:{type(exc).__name__}") from exc
 
-    def transcribe(self, binding: RoleBinding, audio_path: Path) -> dict[str, Any]:
+    def transcribe(self, binding: RoleBinding, audio_path: Path, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         status = self.status(binding)
         if not status["available"]:
             raise LocalModelUnavailable(status["reason"])
@@ -556,10 +574,12 @@ class AudarMtmdAdapter:
         )
 
     @staticmethod
-    def _text_from_cli(stdout: str) -> str:
+    def _text_from_cli(stdout: str | None) -> str:
         # llama-mtmd-cli emits diagnostics and the assistant completion. Keep
         # the raw output separately; this conservative parser avoids inventing
         # timestamps or confidence fields.
+        if not stdout:
+            return ""
         lines = [line.strip() for line in stdout.splitlines() if line.strip()]
         clean = [line for line in lines if not line.startswith(("llama_", "main:", "load_", "ggml_", "system_info", "sampling"))]
         text = (clean[-1] if clean else "").strip()
@@ -567,7 +587,7 @@ class AudarMtmdAdapter:
         text = re.sub(r"^language\s+[A-Za-z-]+\s*<asr_text>\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
-    def transcribe(self, binding: RoleBinding, audio_path: Path) -> dict[str, Any]:
+    def transcribe(self, binding: RoleBinding, audio_path: Path, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         status = self.status(binding)
         if not status["available"]:
             raise LocalModelUnavailable(status["reason"])
@@ -578,20 +598,48 @@ class AudarMtmdAdapter:
         projector = self._projector_artifact(entry)
         if not decoder or not projector or not audio_path.is_file():
             raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: Audar decoder, BF16 projector, and audio are required")
-        command = [str(entry["runtime_path"]), "-m", str(decoder), "--mmproj", str(projector), "--audio", str(audio_path), "-sys", "فرّغ الكلام العربي التالي.", "--temp", "0", "-n", str(entry.get("max_tokens", 512))]
+        runtime_audio = audio_path
+        temporary_audio: Path | None = None
+        if audio_path.suffix.lower() not in {".wav", ".flac"}:
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise LocalModelUnavailable("UNAVAILABLE_LOCAL_MODEL: ffmpeg is required for non-WAV Audar input")
+            temporary_audio = Path(tempfile.mkstemp(prefix="saudi-sta-audio-", suffix=".wav")[1])
+            try:
+                converted = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(audio_path), "-ar", "16000", "-ac", "1", "-y", str(temporary_audio)], capture_output=True, text=True, timeout=45)
+            except subprocess.TimeoutExpired as exc:
+                _cleanup_temp_path(temporary_audio)
+                raise LocalModelUnavailable("LOCAL_AUDIO_CONVERSION_TIMEOUT") from exc
+            if converted.returncode != 0:
+                _cleanup_temp_path(temporary_audio)
+                raise LocalModelUnavailable("LOCAL_AUDIO_CONVERSION_FAILED")
+            runtime_audio = temporary_audio
+        command = [str(entry["runtime_path"]), "-m", str(decoder), "--mmproj", str(projector), "--audio", str(runtime_audio), "-sys", "فرّغ الكلام العربي التالي.", "-p", "فرّغ التسجيل الصوتي حرفياً.", "--temp", "0", "-n", str(entry.get("max_tokens", 512))]
         started = time.perf_counter()
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=False,
                                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
         try:
-            raw, _stderr = process.communicate(timeout=float(entry.get("timeout_seconds", 180)))
+            deadline = time.monotonic() + float(timeout_seconds or entry.get("timeout_seconds", 180))
+            while process.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    raise LocalModelUnavailable("LOCAL_AUDAR_CANCELLED")
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, float(timeout_seconds or entry.get("timeout_seconds", 180)))
+                time.sleep(0.2)
+            raw, _stderr = process.communicate()
             return_code = process.returncode
-        except subprocess.TimeoutExpired as exc:
+        except (subprocess.TimeoutExpired, LocalModelUnavailable) as exc:
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
             else:
                 process.kill()
             process.communicate()
-            raise LocalModelUnavailable("LOCAL_AUDAR_TIMEOUT") from exc
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise LocalModelUnavailable("LOCAL_AUDAR_TIMEOUT") from exc
+            raise
+        finally:
+            if temporary_audio:
+                _cleanup_temp_path(temporary_audio)
         elapsed = (time.perf_counter() - started) * 1000
         if return_code != 0:
             raise LocalModelUnavailable(f"LOCAL_AUDAR_INFERENCE_FAILED:exit={return_code}")
@@ -780,7 +828,7 @@ class LlamaCppAdapter:
             command.extend(["-sys", system])
         command.extend(["-p", user])
         started = time.perf_counter()
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=False,
                                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
         deadline = time.monotonic() + float(timeout_seconds or entry.get("timeout_seconds", 600))
         try:
@@ -818,6 +866,7 @@ class LlamaCppAdapter:
             "reasoning": "off", "model_id": binding.model_id, "revision_or_digest": binding.revision_or_digest,
             "schema_version": binding.schema_version, "prompt_version": binding.prompt_version,
             "artifact_hashes": list(getattr(binding, "artifact_hashes", []) or []), "tool_mode": binding.tool_mode,
+            "artifacts": list(status.get("artifacts", [])),
             "runtime_path": str(runtime_path), "stderr": stderr[-2000:],
             "raw_model_output": stdout[-10000:],
         }}

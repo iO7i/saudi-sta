@@ -1,5 +1,5 @@
 (() => {
-  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, locale: "ar", recordingId: null, recorder: null, chunks: [], pendingAudio: null, stageCapabilities: [], scenarios: [] };
+  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, runJobId: null, locale: "ar", recordingId: null, recorder: null, chunks: [], pendingAudio: null, stageCapabilities: [], scenarios: [] };
   const $ = (id) => document.getElementById(id);
   const roles = { transcribe: "bindingTranscribe", summarize: "bindingSummarize", actionize: "bindingActionize", function_call: "bindingFunction" };
   const UI_COPY = {
@@ -288,12 +288,40 @@
     $("applyProposal").disabled = !(proposal && proposal.status === "READY" && !outputs.stale);
   }
 
+  async function pollRunJob(jobId) {
+    const job = await api(`/api/runs/jobs/${jobId}`);
+    if (["queued", "running"].includes(job.status)) {
+      state.runJobId = jobId; $("cancelRunJob").disabled = false;
+      $("runBadge").textContent = `${job.status} · ${job.timeout_seconds}s cap`;
+      $("runOutput").textContent = `${job.status} · ${label("التشغيل المحلي مستمر؛ الواجهة لا تتجمد.", "Local inference is running; the UI remains responsive.")}`;
+      window.setTimeout(() => pollRunJob(jobId).catch((error) => toast(error.message)), 500);
+      return;
+    }
+    if (job.result?.record) {
+      renderRun(job.result.record); renderSandbox(await api("/api/sandbox"));
+    } else if (job.error) {
+      $("runBadge").textContent = job.status;
+      $("runOutput").textContent = `${job.status}: ${job.error}`;
+    }
+    state.runJobId = null; $("cancelRunJob").disabled = true;
+    toast(`${label("انتهت مهمة التشغيل", "Run job")}: ${job.status}`);
+  }
+
   async function runWorkbench() {
     const body = {
       text: $("sourceText").value, recipe_id: $("recipeSelect").value, recording_id: state.recordingId,
       manual_transcript: $("manualTranscript").checked, reference_timestamp: $("referenceTime").value, timezone: "Asia/Riyadh"
     };
-    const result = await api("/api/runs", { method: "POST", body: JSON.stringify(body) });
+    const recipe = state.recipes.find((item) => item.id === body.recipe_id);
+    const slowLocalRoute = recipe && Object.values(recipe.bindings || {}).some((binding) => binding.execution_mode === "LOCAL");
+    const result = await api(slowLocalRoute ? "/api/runs/jobs" : "/api/runs", { method: "POST", body: JSON.stringify(body) });
+    if (result.job_id) {
+      state.runJobId = result.job_id; $("cancelRunJob").disabled = false;
+      $("runBadge").textContent = "queued";
+      $("runOutput").textContent = label("بدأ التشغيل المحلي؛ يمكنك التنقل أثناء التنفيذ.", "Local run queued; you can navigate while it executes.");
+      pollRunJob(result.job_id);
+      return;
+    }
     renderRun(result.record); renderSandbox(await api("/api/sandbox"));
     toast(label("اكتمل التشغيل محلياً.", "Local run completed."));
   }
@@ -303,6 +331,12 @@
     if (!proposal) return;
     const result = await api(`/api/records/${state.currentRecord.id}/apply`, { method: "POST", body: JSON.stringify({ proposal_id: proposal.id }) });
     renderSandbox(result.sandbox); toast(result.status);
+  }
+
+  async function cancelRunJob() {
+    if (!state.runJobId) return;
+    const result = await api(`/api/runs/jobs/${state.runJobId}/cancel`, { method: "POST", body: "{}" });
+    $("runBadge").textContent = result.status; toast(`${label("حالة التشغيل", "Run status")}: ${result.status}`);
   }
 
   function renderPreflight(plan) {
@@ -567,6 +601,7 @@
     $("recipeSelect").onchange = (event) => loadRecipeIntoBuilder(event.target.value);
     $("saveRecipe").onclick = () => saveRecipe().catch((error) => toast(error.message));
     $("runWorkbench").onclick = () => runWorkbench().catch((error) => toast(error.message));
+    $("cancelRunJob").onclick = () => cancelRunJob().catch((error) => toast(error.message));
     $("applyProposal").onclick = () => applyProposal().catch((error) => toast(error.message));
     document.querySelectorAll(".mode-buttons button").forEach((button) => button.onclick = () => preflight(button.dataset.mode).catch((error) => toast(error.message)));
     $("startTournament").onclick = () => startTournament().catch((error) => toast(error.message));

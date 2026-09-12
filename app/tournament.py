@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import threading
 import time
@@ -94,9 +95,11 @@ def _speech_errors(reference: str, hypothesis: str, critical_spans: list[dict[st
 class TournamentManager:
     """Bounded whole-route evaluator. Human labels remain evaluator-side and never enter model prompts."""
 
-    def __init__(self, engine: Engine, recipe_getter: Callable[[str], dict[str, Any] | None], save_report: Callable[[dict[str, Any]], None], seed_case_getter: Callable[[], list[dict[str, Any]]], recording_path_getter: Callable[[str], Path | None], speech_adapter: Any) -> None:
+    def __init__(self, engine: Engine, recipe_getter: Callable[[str], dict[str, Any] | None], save_report: Callable[[dict[str, Any]], None], seed_case_getter: Callable[[], list[dict[str, Any]]], recording_path_getter: Callable[[str], Path | None], speech_adapter: Any, *, route_timeout_seconds: float | None = None, tournament_timeout_seconds: float | None = None) -> None:
         self.engine, self.recipe_getter, self.save_report = engine, recipe_getter, save_report
         self.seed_case_getter, self.recording_path_getter, self.speech_adapter = seed_case_getter, recording_path_getter, speech_adapter
+        self.route_timeout_seconds = float(route_timeout_seconds or os.getenv("SAUDI_STA_ROUTE_TIMEOUT_SECONDS", "360"))
+        self.tournament_timeout_seconds = float(tournament_timeout_seconds or os.getenv("SAUDI_STA_TOURNAMENT_TIMEOUT_SECONDS", "1800"))
         self.jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -151,6 +154,8 @@ class TournamentManager:
             if not job:
                 return None
             job["cancel_requested"] = True
+            if job.get("_cancel_event"):
+                job["_cancel_event"].set()
             if job["status"] == "RUNNING":
                 job["status"] = "CANCEL_REQUESTED"
             return self._public_job(job)
@@ -162,9 +167,9 @@ class TournamentManager:
 
     @staticmethod
     def _public_job(job: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in job.items() if key != "cancel_requested"}
+        return {key: value for key, value in job.items() if key not in {"cancel_requested", "_cancel_event"}}
 
-    def _run_case(self, recipe: Recipe, case: dict[str, Any], human_seed: bool) -> dict[str, Any]:
+    def _run_case(self, recipe: Recipe, case: dict[str, Any], human_seed: bool, *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         started = time.perf_counter()
         transcription: dict[str, Any] | None = None
         try:
@@ -172,7 +177,10 @@ class TournamentManager:
                 path = self.recording_path_getter(case["recording_id"])
                 if not path:
                     raise ValueError("LOCAL_RECORDING_MISSING")
-                transcription = self.speech_adapter.transcribe(recipe.bindings["transcribe"], path)
+                if recipe.bindings["transcribe"].provider == "audar_mtmd_local":
+                    transcription = self.speech_adapter.transcribe(recipe.bindings["transcribe"], path, timeout_seconds=self.route_timeout_seconds, cancel_event=cancel_event)
+                else:
+                    transcription = self.speech_adapter.transcribe(path)
                 source = transcription["text"]
                 expected, provenance = case["expected"], case["provenance"]
                 spans = provenance.get("critical_spans", [])
@@ -180,7 +188,7 @@ class TournamentManager:
                 stt = {"reference": case["reviewed_transcript"], "hypothesis": source, "wer": _wer(case["reviewed_transcript"], source), "cer": _cer(case["reviewed_transcript"], source), "critical_span_accuracy": sum(int(str(span["text"]).casefold() in source.casefold()) for span in existing_spans) / max(1, len(existing_spans)), "errors": _speech_errors(case["reviewed_transcript"], source, spans), "signals": transcription.get("signals", {})}
             else:
                 source, expected, provenance, stt = case["text"], case["expected"], {}, None
-            result = self.engine.run(recipe, source, "2026-09-11T09:00:00+03:00")
+            result = self.engine.run(recipe, source, "2026-09-11T09:00:00+03:00", timeout_seconds=self.route_timeout_seconds, cancel_event=cancel_event)
             proposal = result.outputs["proposal"]
             action_errors = _action_errors(expected, proposal, provenance.get("critical_spans", [])) if human_seed else ([] if _matches_expected(proposal, expected) else ["WRONG_ARGUMENT"])
             success, sandbox_verified = not action_errors, None
@@ -201,12 +209,20 @@ class TournamentManager:
 
     def _execute(self, job_id: str, request: TournamentStart) -> None:
         cases, dataset = self._dataset(request)
-        plan, human_seed, routes, cancelled = self.preflight(request), request.dataset_id == "SEED_HUMAN_EVAL", [], False
+        cancel_event = threading.Event()
+        with self._lock:
+            self.jobs[job_id]["_cancel_event"] = cancel_event
+        started = time.monotonic()
+        plan, human_seed, routes, cancelled, timed_out = self.preflight(request), request.dataset_id == "SEED_HUMAN_EVAL", [], False, False
         for candidate in plan["candidates"]:
             with self._lock:
                 if self.jobs[job_id]["cancel_requested"]:
                     cancelled = True
                     break
+            if time.monotonic() - started >= self.tournament_timeout_seconds:
+                timed_out = True
+                cancel_event.set()
+                break
             recipe = Recipe.model_validate(self.recipe_getter(candidate["recipe_id"]))
             per_case = []
             for case in cases:
@@ -214,15 +230,20 @@ class TournamentManager:
                     if self.jobs[job_id]["cancel_requested"]:
                         cancelled = True
                         break
-                per_case.append(self._run_case(recipe, case, human_seed))
+                if time.monotonic() - started >= self.tournament_timeout_seconds:
+                    timed_out = True
+                    cancel_event.set()
+                    break
+                per_case.append(self._run_case(recipe, case, human_seed, cancel_event=cancel_event))
             routes.append(self._route_result(recipe, candidate, cases, per_case))
-            if cancelled:
+            if cancelled or timed_out:
                 break
-        report = {"id": job_id, "status": "CANCELLED" if cancelled else "COMPLETED", "mode": request.mode, "evidence_type": f"{dataset['evidence_type']} + route-specific execution evidence", "dataset_id": request.dataset_id, "dataset_warning": dataset["warning"], "runtime": {"python": platform.python_version(), "platform": platform.system(), "machine": platform.machine()}, "hardware_summary": "Machine-local preflight stored separately; no sensitive identifiers included.", "quality_floor": request.quality_floor, "routes": routes, "selection": self._select(request.mode, routes, request.quality_floor) if not cancelled else {"outcome": "CANCELLED"}, "remote_calls": 0, "retry_count": 0, "cache_protocol": "No stage-output cache. Model residency may make later cases warm; model-load metrics are retained.", "confidence_diagnostics": {"calibrated_correctness": None, "note": "Native signals are observational only; no calibrated confidence mapping is fitted."}}
-        if not cancelled:
-            self.save_report(report)
+        final_status = "TIMED_OUT" if timed_out else "CANCELLED" if cancelled else "COMPLETED"
+        report = {"id": job_id, "status": final_status, "mode": request.mode, "evidence_type": f"{dataset['evidence_type']} + route-specific execution evidence", "dataset_id": request.dataset_id, "dataset_warning": dataset["warning"], "runtime": {"python": platform.python_version(), "platform": platform.system(), "machine": platform.machine()}, "hardware_summary": "Machine-local preflight stored separately; no sensitive identifiers included.", "quality_floor": request.quality_floor, "routes": routes, "selection": self._select(request.mode, routes, request.quality_floor) if final_status == "COMPLETED" else {"outcome": final_status}, "remote_calls": 0, "retry_count": 0, "cache_protocol": "No stage-output cache. Model residency may make later cases warm; model-load metrics are retained.", "confidence_diagnostics": {"calibrated_correctness": None, "note": "Native signals are observational only; no calibrated confidence mapping is fitted."}, "timeout_policy": {"route_timeout_seconds": self.route_timeout_seconds, "tournament_timeout_seconds": self.tournament_timeout_seconds, "partial_results_retained": True}}
+        self.save_report(report)
         with self._lock:
             self.jobs[job_id]["status"], self.jobs[job_id]["report"] = report["status"], report
+            self.jobs[job_id].pop("_cancel_event", None)
 
     @staticmethod
     def _route_result(recipe: Recipe, candidate: dict[str, Any], cases: list[dict[str, Any]], per_case: list[dict[str, Any]]) -> dict[str, Any]:

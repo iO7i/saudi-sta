@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import os
+import time
 import uuid
 import wave
 from pathlib import Path
@@ -26,6 +27,7 @@ from .store import Store
 from .stt_tournament import run_stt_tournament
 from .seed_scenarios import SEED_SCENARIOS
 from .tournament import TournamentManager
+from .jobs import LocalJobManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,6 +40,8 @@ speech = TransformersWhisperAdapter(artifact_registry)
 audar_speech = AudarMtmdAdapter(artifact_registry)
 local_text = LlamaCppAdapter(artifact_registry)
 engine = Engine(ollama, local_text)
+LOCAL_ROUTE_TIMEOUT_SECONDS = float(os.getenv("SAUDI_STA_ROUTE_TIMEOUT_SECONDS", "360"))
+local_jobs = LocalJobManager(default_timeout_seconds=LOCAL_ROUTE_TIMEOUT_SECONDS)
 app = FastAPI(title="Saudi STA Workbench", version="0.1.0", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "static"), name="static")
 
@@ -66,9 +70,7 @@ def default_recipes() -> list[Recipe]:
 def local_default_recipes() -> list[Recipe]:
     """Named real routes appear only after each independent binding was exercised by discovery."""
     catalog = {binding.id: binding for binding in current_bindings()}
-    stt = speech.binding()
-    if not stt.available:
-        return []
+    stt_candidates = [binding for binding in catalog.values() if binding.role == Role.TRANSCRIBE and binding.available and binding.capability_provenance.value == "VERIFIED_LOCAL"]
     candidates = [binding for binding in catalog.values() if binding.provider == "llama_cpp_local" and binding.available]
     by_model: dict[str, dict[str, RoleBinding]] = {}
     for binding in candidates:
@@ -78,26 +80,28 @@ def local_default_recipes() -> list[Recipe]:
         if not {"summarize", "actionize", "function_call"}.issubset(roles):
             continue
         safe_id = "".join(char if char.isalnum() else "_" for char in model_id).strip("_").lower()
-        result.extend([
+        for stt in stt_candidates:
+            stt_safe = "".join(char if char.isalnum() else "_" for char in stt.model_id).strip("_").lower()
+            result.extend([
             Recipe(
-                id=f"real_{safe_id}_direct_v1", name=f"Real local · {model_id} · Direct STT → function call",
+                id=f"real_{stt_safe}_{safe_id}_direct_v1", name=f"Real local · {stt.model_id} → {model_id} · Direct",
                 version="slice02-v1", action_mode="DIRECT", summary_branch=False,
                 graph=["transcribe", "function_call"],
                 bindings={"transcribe": stt, "function_call": roles["function_call"]}, required_outputs=["proposal"],
             ),
             Recipe(
-                id=f"real_{safe_id}_semantic_v1", name=f"Real local · {model_id} · Semantic STT → actionize → function call",
+                id=f"real_{stt_safe}_{safe_id}_semantic_v1", name=f"Real local · {stt.model_id} → {model_id} · Semantic",
                 version="slice02-v1", action_mode="TWO_STAGE", summary_branch=False,
                 graph=["transcribe", "actionize", "function_call"],
                 bindings={"transcribe": stt, "actionize": roles["actionize"], "function_call": roles["function_call"]}, required_outputs=["proposal"],
             ),
             Recipe(
-                id=f"real_{safe_id}_semantic_summary_v1", name=f"Real local · {model_id} · Semantic + summary",
+                id=f"real_{stt_safe}_{safe_id}_semantic_summary_v1", name=f"Real local · {stt.model_id} → {model_id} · Semantic + summary",
                 version="slice02-v1", action_mode="TWO_STAGE", summary_branch=True,
                 graph=["transcribe", "summarize", "actionize", "function_call"],
                 bindings={"transcribe": stt, "summarize": roles["summarize"], "actionize": roles["actionize"], "function_call": roles["function_call"]},
             ),
-        ])
+            ])
     return result
 
 
@@ -251,8 +255,19 @@ def get_record(record_id: str) -> dict[str, Any]:
     return record
 
 
-@app.post("/api/runs")
-def run_workbench(body: RunRequest) -> dict[str, Any]:
+def _run_workbench_sync(body: RunRequest, *, cancel_event: Any | None = None, route_timeout_seconds: float | None = None) -> dict[str, Any]:
+    route_started = time.monotonic()
+
+    def route_budget() -> float | None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ValueError("LOCAL_ROUTE_CANCELLED")
+        if route_timeout_seconds is None:
+            return None
+        remaining = float(route_timeout_seconds) - (time.monotonic() - route_started)
+        if remaining <= 0:
+            raise ValueError("LOCAL_ROUTE_TIMEOUT")
+        return remaining
+
     recipe_body = store.get_recipe(body.recipe_id)
     if not recipe_body:
         raise HTTPException(404, "RECIPE_NOT_FOUND")
@@ -273,7 +288,7 @@ def run_workbench(body: RunRequest) -> dict[str, Any]:
         if transcribe_binding and transcribe_binding.provider in {"transformers_whisper_local", "audar_mtmd_local"} and transcribe_binding.available:
             try:
                 adapter = audar_speech if transcribe_binding.provider == "audar_mtmd_local" else speech
-                transcription = adapter.transcribe(transcribe_binding, store.recording_path(body.recording_id)) if transcribe_binding.provider == "audar_mtmd_local" else adapter.transcribe(store.recording_path(body.recording_id))
+                transcription = adapter.transcribe(transcribe_binding, store.recording_path(body.recording_id), timeout_seconds=route_budget(), cancel_event=cancel_event) if transcribe_binding.provider == "audar_mtmd_local" else adapter.transcribe(store.recording_path(body.recording_id))
                 text = transcription["text"]
             except (LocalModelUnavailable, PolicyViolation) as exc:
                 transcription = {"status": "UNAVAILABLE_LOCAL_MODEL", "reason": str(exc)}
@@ -286,15 +301,53 @@ def run_workbench(body: RunRequest) -> dict[str, Any]:
         }
     else:
         try:
-            result = engine.run(recipe, text, body.reference_timestamp)
+            result = engine.run(recipe, text, body.reference_timestamp, timeout_seconds=route_budget(), cancel_event=cancel_event)
             outputs = result.outputs
             if transcription:
                 outputs["transcription"] = {"status": "READY", "evidence_type": "REAL_LOCAL_MODEL", **transcription}
+                recording = store.recording(body.recording_id) if body.recording_id else None
+                outputs["audio_identity"] = {
+                    "recording_id": body.recording_id,
+                    "filename": recording.get("filename") if recording else None,
+                    "sha256": recording.get("audio_sha256") if recording else None,
+                    "bytes": recording.get("bytes") if recording else None,
+                    "duration_seconds": recording.get("duration_seconds") if recording else None,
+                    "provenance": "LOCAL_RECORDING",
+                }
+                outputs["evidence_type"] = "REAL_LOCAL_END_TO_END" if any(item.get("execution_mode") == "LOCAL" for item in outputs.get("actual_models", [])) else outputs.get("evidence_type")
             outputs["transcript_origin"] = "LOCAL_ASR" if transcription else ("MANUAL_TRANSCRIPT_ASSOCIATED_WITH_RECORDING" if body.manual_transcript and recording_name else "TEXT_ENTRY")
         except (ValueError, PolicyViolation) as exc:
             raise HTTPException(422, str(exc)) from exc
     record_id = store.save_record(text, outputs, recording_name)
     return {"record_id": record_id, "record": store.get_record(record_id)}
+
+
+@app.post("/api/runs")
+def run_workbench(body: RunRequest) -> dict[str, Any]:
+    """Synchronous compatibility endpoint; slow local routes use /api/runs/jobs."""
+    return _run_workbench_sync(body, route_timeout_seconds=LOCAL_ROUTE_TIMEOUT_SECONDS)
+
+
+@app.post("/api/runs/jobs")
+def run_workbench_job(body: RunRequest) -> dict[str, Any]:
+    job = local_jobs.submit(lambda cancel_event: _run_workbench_sync(body, cancel_event=cancel_event, route_timeout_seconds=LOCAL_ROUTE_TIMEOUT_SECONDS), timeout_seconds=LOCAL_ROUTE_TIMEOUT_SECONDS, kind="audio_to_action")
+    return {"job_id": job["id"], **job}
+
+
+@app.get("/api/runs/jobs/{job_id}")
+def run_workbench_job_status(job_id: str) -> dict[str, Any]:
+    job = local_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "RUN_JOB_NOT_FOUND")
+    return job
+
+
+@app.post("/api/runs/jobs/{job_id}/cancel")
+def cancel_run_workbench_job(job_id: str) -> dict[str, Any]:
+    job = local_jobs.cancel(job_id)
+    if not job:
+        raise HTTPException(404, "RUN_JOB_NOT_FOUND")
+    return job
 
 
 @app.patch("/api/records/{record_id}/transcript")
@@ -340,12 +393,25 @@ def apply_proposal(record_id: str, body: ApplyRequest) -> dict[str, Any]:
     proposal = ToolProposal.model_validate(proposal_body)
     if proposal.source_revision != record["revision"]:
         raise HTTPException(409, "STALE_PROPOSAL")
+    before = store.get_sandbox()
+    apply_started = time.perf_counter()
     try:
         # The store takes the SQLite write lock and re-checks the proposal id
         # so concurrent/repeated Apply cannot duplicate a local effect.
         state, status = store.apply_sandbox_once(proposal, apply_to_sandbox)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    outputs.setdefault("apply_evidence", []).append({
+        "proposal_id": proposal.id,
+        "source_revision": proposal.source_revision,
+        "status": status,
+        "sandbox_before": before,
+        "sandbox_after": state,
+        "idempotency_identity": proposal.id,
+        "latency_ms": (time.perf_counter() - apply_started) * 1000,
+        "evidence_type": outputs.get("evidence_type", "UNKNOWN"),
+    })
+    store.update_record_outputs(record_id, outputs)
     return {"status": status, "sandbox": state}
 
 

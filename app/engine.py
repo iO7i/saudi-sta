@@ -371,14 +371,14 @@ class Engine:
         if "function_call" in graph_set and recipe.bindings["function_call"].execution_mode.value == "DEMO_RULES" and recipe.bindings["function_call"].tool_mode != "JSON_EMULATION":
             raise ValueError("DEMO_RULES_ONLY_SUPPORTS_JSON_EMULATION")
 
-    def _local_json(self, binding: Any, prompt: str) -> dict[str, Any]:
+    def _local_json(self, binding: Any, prompt: str, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
         adapter = self.ollama_adapter if binding.provider == "ollama_local" else self.local_text_adapter if binding.provider == "llama_cpp_local" else None
         if not adapter:
             raise ValueError("UNAVAILABLE_LOCAL_MODEL: local adapter was not configured")
         raw = adapter.invoke(
             binding,
             [{"role": "system", "content": "Return only schema-valid JSON. Do not include reasoning."}, {"role": "user", "content": prompt}],
-            json_schema={"type": "object"},
+            json_schema={"type": "object"}, timeout_seconds=timeout_seconds, cancel_event=cancel_event,
         )
         try:
             payload = self._parse_json(raw["content"])
@@ -401,22 +401,22 @@ class Engine:
             raise json.JSONDecodeError("JSON object required", content, start)
         return payload
 
-    def _summarize(self, binding: Any, text: str) -> SummaryResult:
+    def _summarize(self, binding: Any, text: str, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> SummaryResult:
         if binding.execution_mode.value == "DEMO_RULES":
             return self.demo.summarize(text)
-        payload = self._local_json(binding, f"""Return one JSON object with keys status, summary, supporting_spans. Summarize the Arabic or English source faithfully. Do not invent actions. status must be READY. supporting_spans is an array of objects with start, end, text drawn from the source. Source: {text}""")
+        payload = self._local_json(binding, f"""Return one JSON object with keys status, summary, supporting_spans. Summarize the Arabic or English source faithfully. Do not invent actions. status must be READY. supporting_spans is an array of objects with start, end, text drawn from the source. Source: {text}""", timeout_seconds=timeout_seconds, cancel_event=cancel_event)
         payload["evidence_type"] = "REAL_LOCAL_MODEL"
         payload["calibrated_correctness"] = None
         return SummaryResult.model_validate(payload)
 
-    def _actionize(self, binding: Any, text: str, reference_timestamp: str) -> SemanticPlan:
+    def _actionize(self, binding: Any, text: str, reference_timestamp: str, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> SemanticPlan:
         if binding.execution_mode.value == "DEMO_RULES":
             return self.demo.actionize(text, reference_timestamp)
-        payload = self._local_json(binding, f"""Return one JSON object with status, intent, entities, corrections, missing_fields, supporting_spans. Extract a safe semantic action plan only. Preserve explicit corrections and negation. If a request is ambiguous, set status NEEDS_CLARIFICATION and list missing fields. Never invent a clock time for a relative time such as after sunset. Reference timestamp: {reference_timestamp}. Timezone: Asia/Riyadh. Source: {text}""")
+        payload = self._local_json(binding, f"""Return one JSON object with status, intent, entities, corrections, missing_fields, supporting_spans. Extract a safe semantic action plan only. Preserve explicit corrections and negation. If a request is ambiguous, set status NEEDS_CLARIFICATION and list missing fields. Never invent a clock time for a relative time such as after sunset. Reference timestamp: {reference_timestamp}. Timezone: Asia/Riyadh. Source: {text}""", timeout_seconds=timeout_seconds, cancel_event=cancel_event)
         payload["evidence_type"] = "REAL_LOCAL_MODEL"
         return SemanticPlan.model_validate(payload)
 
-    def _function_call(self, binding: Any, text: str, plan: SemanticPlan | None, reference_timestamp: str, source_revision: int) -> ToolProposal:
+    def _function_call(self, binding: Any, text: str, plan: SemanticPlan | None, reference_timestamp: str, source_revision: int, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> ToolProposal:
         if binding.execution_mode.value == "DEMO_RULES":
             proposal = self.demo.function_call(text, plan, source_revision) if plan else self.demo.direct_function_call(text, reference_timestamp, source_revision)
             proposal.missing_fields = list(plan.missing_fields) if plan else []
@@ -438,6 +438,7 @@ class Engine:
             [{"role": "system", "content": "Return one JSON object only. Produce a safe typed local sandbox proposal; never send a message or perform an external action. Allowed tools: create_note_draft(title,body), create_reminder_draft(title,due_date,hour,meridiem), add_list_items(list_name,items), revise_draft(draft_id,patch), cancel_draft(draft_id), request_clarification(question,missing_fields). Object keys: status, tool_name, arguments. Use NEEDS_CLARIFICATION and request_clarification for unresolved references or relative times without a defined interpretation. Honour explicit negation and corrections."}, {"role": "user", "content": json.dumps({"source_text": text, "semantic_plan": plan.model_dump(mode="json") if plan else None, "reference_timestamp": reference_timestamp}, ensure_ascii=False)}],
             json_schema={"type": "object"},
             tools=[{"type": "function", "function": {"name": name, "description": "Local sandbox operation", "parameters": {"type": "object"}}} for name in TOOL_SCHEMAS],
+            timeout_seconds=timeout_seconds, cancel_event=cancel_event,
         )
         try:
             if binding.tool_mode in {"NATIVE", "NATIVE_TOOL_CALL"} and raw.get("tool_calls"):
@@ -452,6 +453,12 @@ class Engine:
         # while leaving the original raw output in provider provenance.
         if "tool_name" not in payload and isinstance(payload.get("tool"), str):
             payload["tool_name"] = payload.pop("tool")
+        # Some JSON-emulation templates echo request context alongside the
+        # proposal.  Remove only those known, non-action echo keys; unknown
+        # action/argument fields still fail strict validation below.
+        echoed_keys = {key for key in ("source_text", "semantic_plan", "reference_timestamp", "timezone") if key in payload}
+        for key in echoed_keys:
+            payload.pop(key, None)
         needs_clarification = bool(payload.pop("needs_clarification", False))
         payload.setdefault("status", "NEEDS_CLARIFICATION" if needs_clarification else "READY")
         payload.update({
@@ -468,15 +475,27 @@ class Engine:
                 "prompt_version": binding.prompt_version,
                 "schema_version": binding.schema_version,
                 "runtime_metrics": raw.get("runtime_metrics"),
+                "ignored_echo_keys": sorted(echoed_keys),
             },
         })
         if raw.get("runtime_metrics"):
             self._runtime_metrics.append({"role": binding.role.value, **raw["runtime_metrics"]})
         return ToolProposal.model_validate(payload)
 
-    def run(self, recipe: Recipe, text: str, reference_timestamp: str, source_revision: int = 1) -> EngineResult:
+    def run(self, recipe: Recipe, text: str, reference_timestamp: str, source_revision: int = 1, *, timeout_seconds: float | None = None, cancel_event: Any | None = None) -> EngineResult:
         self.validate_recipe(recipe)
         self._runtime_metrics = []
+        deadline = time.monotonic() + float(timeout_seconds) if timeout_seconds is not None else None
+
+        def remaining() -> float | None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ValueError("LOCAL_ROUTE_CANCELLED")
+            if deadline is None:
+                return None
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ValueError("LOCAL_ROUTE_TIMEOUT")
+            return left
         stage_durations: dict[str, float] = {}
         calls: dict[str, int] = {}
         graph = list(recipe.graph)
@@ -491,7 +510,9 @@ class Engine:
             "evidence_type": "DEMO_RULES" if execution_evidence == ["DEMO_RULES"] else "REAL_LOCAL_MODEL",
             "actual_models": [
                 {"role": role, "provider": binding.provider, "model_id": binding.model_id, "digest": binding.revision_or_digest,
-                 "execution_mode": binding.execution_mode.value, "tool_mode": binding.tool_mode}
+                 "execution_mode": binding.execution_mode.value, "tool_mode": binding.tool_mode,
+                 "prompt_version": binding.prompt_version, "schema_version": binding.schema_version,
+                 "generation": dict(binding.generation), "artifact_hashes": list(binding.artifact_hashes)}
                 for role, binding in recipe.bindings.items()
             ],
             "reference_timestamp": reference_timestamp,
@@ -523,7 +544,7 @@ class Engine:
             })
         if "summarize" in graph_set:
             started = time.perf_counter()
-            summary = self._summarize(recipe.bindings["summarize"], text)
+            summary = self._summarize(recipe.bindings["summarize"], text, timeout_seconds=remaining(), cancel_event=cancel_event)
             stage_durations["summarize"] = (time.perf_counter() - started) * 1000
             calls["summarize"] = 1
             stage_states["summarize"] = StageExecutionState.READY.value
@@ -533,7 +554,7 @@ class Engine:
         plan: SemanticPlan | None = None
         if "actionize" in graph_set:
             started = time.perf_counter()
-            plan = self._actionize(recipe.bindings["actionize"], text, reference_timestamp)
+            plan = self._actionize(recipe.bindings["actionize"], text, reference_timestamp, timeout_seconds=remaining(), cancel_event=cancel_event)
             stage_durations["actionize"] = (time.perf_counter() - started) * 1000
             calls["actionize"] = 1
             stage_states["actionize"] = StageExecutionState.READY.value
@@ -542,7 +563,7 @@ class Engine:
             outputs["semantic_plan"] = None
         if "function_call" in graph_set:
             started = time.perf_counter()
-            proposal = self._function_call(recipe.bindings["function_call"], text, plan, reference_timestamp, source_revision)
+            proposal = self._function_call(recipe.bindings["function_call"], text, plan, reference_timestamp, source_revision, timeout_seconds=remaining(), cancel_event=cancel_event)
             stage_durations["function_call"] = (time.perf_counter() - started) * 1000
             calls["function_call"] = 1
             stage_states["function_call"] = StageExecutionState.READY.value
