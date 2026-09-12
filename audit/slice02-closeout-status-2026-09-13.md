@@ -43,6 +43,13 @@ proposal was applied, and no sandbox state was changed by these attempts.
 The detailed hashes, transcripts, and failure evidence are in
 `audit/slice02-real-route-attempts-2026-09-13.md`.
 
+Follow-up recordings 7–12 were also transcribed locally. Recordings (7) and
+(8) reached Qwen through the same direct recipe and both returned strict,
+schema-valid `request_clarification` proposals. Recording (8) asks for the
+missing note content; Recording (7) contains mixed list/note wording and an
+unresolved “do this” phrase. This validates the real route and clarification
+behavior, but still does not provide an Apply-eligible proposal.
+
 ## Exact next input needed
 
 Record one natural utterance that directly requests a supported local
