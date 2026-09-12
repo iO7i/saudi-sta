@@ -11,14 +11,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
+import re
+import signal
 import sys
 import time
 import uuid
 import ctypes
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 ROOT = Path(os.getenv("SAUDI_STA_MODEL_ROOT", r"D:\models"))
@@ -30,7 +33,10 @@ LOCK = STATE / "worker.lock"
 HEARTBEAT_SECONDS = 5
 STALE_SECONDS = 90
 MAX_INTEGRITY_RETRIES = 2
+DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+ARTIFACT_LOCK_SUFFIX = ".lock"
 TERMINAL_STATES = {"INTEGRITY_VERIFIED", "BLOCKED_ACCESS", "BLOCKED_USER_ACTION", "FAILED_RETRY_EXHAUSTED"}
+_STOP_REQUESTED = False
 FROZEN_QUEUE = [
     "Whisper Large v3", "Audar Turbo Q4 + projector", "Audar Turbo Q8", "Audar Flash Q8 + projector", "FireRedVAD",
     "Audar Diarization V1", "LiveKit Turn Detector v1-mini", "Cohere Transcribe Arabic 07-2026", "Qwen3.8-27B Q6_K_L",
@@ -50,6 +56,133 @@ MODEL_LABELS = {
     "audarai/Audar-TTS-V1-Turbo": "Audar TTS V1 Turbo + NeuCodec",
     "Qwen/Qwen3-Omni-30B-A3B-Instruct": "Qwen3-Omni-30B-A3B-Instruct",
 }
+
+
+class DownloadError(RuntimeError):
+    """Base class for errors that are safe to classify and retry."""
+
+
+class DownloadProtocolError(DownloadError):
+    """The remote response cannot safely be written to the artifact."""
+
+
+class ResumeNotHonored(DownloadProtocolError):
+    """A ranged request returned a non-ranged response."""
+
+
+class ArtifactIdentityChanged(DownloadProtocolError):
+    """The remote artifact identity changed between attempts."""
+
+
+class OversizeTransfer(DownloadProtocolError):
+    """The response attempted to exceed the manifest byte ceiling."""
+
+
+class TransientDownloadError(DownloadError):
+    """A connection or server failure that may be retried safely."""
+
+
+class DownloadStopped(DownloadError):
+    """The worker received an explicit stop request."""
+
+
+def request_stop(signum: int | None = None, frame: Any | None = None) -> None:
+    """Request a cooperative stop without mutating any artifact."""
+
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+
+
+def stop_requested() -> bool:
+    return _STOP_REQUESTED
+
+
+def parse_content_range(value: str | None) -> tuple[int, int, int]:
+    if not value:
+        raise DownloadProtocolError("MISSING_CONTENT_RANGE")
+    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+)", value.strip(), flags=re.IGNORECASE)
+    if not match:
+        raise DownloadProtocolError(f"INVALID_CONTENT_RANGE:{value}")
+    start, end, total = (int(part) for part in match.groups())
+    if end < start or total <= end:
+        raise DownloadProtocolError(f"INVALID_CONTENT_RANGE:{value}")
+    return start, end, total
+
+
+def response_status(response: Any) -> int:
+    status = getattr(response, "status", None)
+    if status is None and hasattr(response, "getcode"):
+        status = response.getcode()
+    return int(status or 0)
+
+
+def response_header(response: Any, name: str) -> str | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get(name)
+    return str(value) if value is not None else None
+
+
+def validate_response(
+    response: Any,
+    *,
+    offset: int,
+    expected_bytes: int,
+    previous_identity: dict[str, str | None] | None = None,
+) -> dict[str, str | None]:
+    """Validate the final response before a single byte is written."""
+
+    status = response_status(response)
+    etag = response_header(response, "ETag")
+    last_modified = response_header(response, "Last-Modified")
+    content_encoding = response_header(response, "Content-Encoding")
+    if content_encoding and content_encoding.lower() not in {"identity", "none"}:
+        raise DownloadProtocolError(f"CONTENT_ENCODING_NOT_IDENTITY:{content_encoding}")
+
+    previous_identity = previous_identity or {}
+    previous_etag = previous_identity.get("etag")
+    previous_last_modified = previous_identity.get("last_modified")
+    if previous_etag and etag and previous_etag != etag:
+        raise ArtifactIdentityChanged(f"ETAG_CHANGED:{previous_etag}->{etag}")
+    if previous_last_modified and last_modified and previous_last_modified != last_modified:
+        raise ArtifactIdentityChanged("LAST_MODIFIED_CHANGED")
+    if previous_etag and not etag and not last_modified:
+        raise ArtifactIdentityChanged("PREVIOUS_IDENTITY_NOT_RETURNED")
+
+    content_length = response_header(response, "Content-Length")
+    length = int(content_length) if content_length and content_length.isdigit() else None
+    if offset > 0:
+        if status == 200:
+            raise ResumeNotHonored("RANGE_REQUEST_RETURNED_HTTP_200")
+        if status != 206:
+            raise DownloadProtocolError(f"RANGE_REQUEST_STATUS_{status}")
+        start, end, total = parse_content_range(response_header(response, "Content-Range"))
+        if start != offset:
+            raise DownloadProtocolError(f"CONTENT_RANGE_START_{start}_EXPECTED_{offset}")
+        if total != expected_bytes:
+            raise DownloadProtocolError(f"CONTENT_RANGE_TOTAL_{total}_EXPECTED_{expected_bytes}")
+        expected_response_bytes = expected_bytes - offset
+        if length is not None and length != expected_response_bytes:
+            raise DownloadProtocolError(f"CONTENT_LENGTH_{length}_EXPECTED_{expected_response_bytes}")
+    else:
+        if status == 206:
+            start, end, total = parse_content_range(response_header(response, "Content-Range"))
+            if start != 0 or total != expected_bytes:
+                raise DownloadProtocolError("INITIAL_CONTENT_RANGE_MISMATCH")
+            if length is not None and length != expected_bytes:
+                raise DownloadProtocolError(f"CONTENT_LENGTH_{length}_EXPECTED_{expected_bytes}")
+        elif status == 200:
+            if length is not None and length != expected_bytes:
+                raise DownloadProtocolError(f"CONTENT_LENGTH_{length}_EXPECTED_{expected_bytes}")
+        else:
+            raise DownloadProtocolError(f"INITIAL_REQUEST_STATUS_{status}")
+
+    return {
+        "etag": etag,
+        "last_modified": last_modified,
+        "resolved_url": str(getattr(response, "url", "") or ""),
+    }
 
 
 def hf_item(
@@ -199,13 +332,66 @@ def mark_manifest(item: dict[str, Any], state: str, *, actual_sha256: str | None
             if str(file_entry.get("path", "")).replace("/", "\\").lower() == str(item["path"]).replace("/", "\\").lower() or file_entry.get("name") == item["file"]:
                 file_entry["status"] = state
                 if actual_sha256:
-                    file_entry["sha256"] = actual_sha256
+                    # sha256 is authoritative expected metadata. Never
+                    # replace it with an observed digest after a mismatch.
+                    file_entry["observed_sha256"] = actual_sha256
                 if actual_bytes is not None:
                     file_entry["downloaded_bytes"] = actual_bytes
                 changed = True
     if not changed:
         body.setdefault("verified_artifacts", []).append({"model": item["model"], "file": item["file"], "path": str(item["path"]), "bytes": actual_bytes, "sha256": actual_sha256, "state": state})
     atomic_json(MANIFEST, body)
+
+
+def manifest_file_entry(item: dict[str, Any]) -> dict[str, Any] | None:
+    body = read_json(MANIFEST, {})
+    target = str(item["path"]).replace("\\", "/").lower()
+    for entry in body.get("queue", []):
+        for file_entry in entry.get("files", []):
+            if str(file_entry.get("path", "")).replace("\\", "/").lower() == target or file_entry.get("name") == item["file"]:
+                return file_entry
+    return None
+
+
+def artifact_identity(item: dict[str, Any]) -> dict[str, str | None]:
+    entry = manifest_file_entry(item) or {}
+    return {
+        "etag": entry.get("etag"),
+        "last_modified": entry.get("last_modified"),
+        "resolved_url": entry.get("resolved_url"),
+    }
+
+
+def record_artifact_identity(item: dict[str, Any], identity: dict[str, str | None]) -> None:
+    body = read_json(MANIFEST, {})
+    target = str(item["path"]).replace("\\", "/").lower()
+    changed = False
+    for entry in body.get("queue", []):
+        for file_entry in entry.get("files", []):
+            if str(file_entry.get("path", "")).replace("\\", "/").lower() != target and file_entry.get("name") != item["file"]:
+                continue
+            file_entry["source_url"] = item["url"]
+            for key in ("etag", "last_modified", "resolved_url"):
+                if identity.get(key):
+                    file_entry[key] = identity[key]
+            changed = True
+    if changed:
+        atomic_json(MANIFEST, body)
+
+
+def clear_artifact_identity(item: dict[str, Any]) -> None:
+    body = read_json(MANIFEST, {})
+    target = str(item["path"]).replace("\\", "/").lower()
+    changed = False
+    for entry in body.get("queue", []):
+        for file_entry in entry.get("files", []):
+            if str(file_entry.get("path", "")).replace("\\", "/").lower() != target and file_entry.get("name") != item["file"]:
+                continue
+            for key in ("etag", "last_modified", "resolved_url"):
+                file_entry.pop(key, None)
+            changed = True
+    if changed:
+        atomic_json(MANIFEST, body)
 
 
 def register_manifest_item(item: dict[str, Any]) -> None:
@@ -290,7 +476,7 @@ def sha256(path: Path) -> str:
 
 
 def pid_alive(pid: int | None) -> bool:
-    if not pid or pid == os.getpid():
+    if not pid:
         return False
     if os.name == "nt":
         process_query_limited_information = 0x1000
@@ -312,7 +498,7 @@ def pid_alive(pid: int | None) -> bool:
         return False
 
 
-def acquire_lock(worker_id: str) -> None:
+def acquire_lock(worker_id: str):
     existing = read_json(LOCK, {})
     if pid_alive(existing.get("pid")):
         raise SystemExit(f"worker already active: {existing}")
@@ -321,18 +507,51 @@ def acquire_lock(worker_id: str) -> None:
     # demonstrably dead.
     try:
         LOCK.parent.mkdir(parents=True, exist_ok=True)
-        with LOCK.open("x", encoding="utf-8") as handle:
-            json.dump({"worker_id": worker_id, "pid": os.getpid(), "started_at": now()}, handle)
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         existing = read_json(LOCK, {})
         if pid_alive(existing.get("pid")):
             raise SystemExit(f"worker already active: {existing}")
         LOCK.unlink(missing_ok=True)
-        with LOCK.open("x", encoding="utf-8") as handle:
-            json.dump({"worker_id": worker_id, "pid": os.getpid(), "started_at": now()}, handle)
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    handle = os.fdopen(fd, "w", encoding="utf-8")
+    json.dump({"worker_id": worker_id, "pid": os.getpid(), "started_at": now()}, handle)
+    handle.flush()
+    return handle
 
 
-def release_lock() -> None:
+def acquire_artifact_lock(partial: Path, worker_id: str):
+    lock_path = Path(str(partial) + ARTIFACT_LOCK_SUFFIX)
+    existing = read_json(lock_path, {})
+    if pid_alive(existing.get("pid")):
+        raise DownloadError(f"ARTIFACT_ALREADY_OWNED:{partial}")
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        existing = read_json(lock_path, {})
+        if pid_alive(existing.get("pid")):
+            raise DownloadError(f"ARTIFACT_ALREADY_OWNED:{partial}")
+        lock_path.unlink(missing_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    handle = os.fdopen(fd, "w", encoding="utf-8")
+    json.dump({"worker_id": worker_id, "pid": os.getpid(), "started_at": now()}, handle)
+    handle.flush()
+    return lock_path, handle
+
+
+def release_artifact_lock(lock: tuple[Path, Any] | None) -> None:
+    if not lock:
+        return
+    lock_path, handle = lock
+    try:
+        handle.close()
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def release_lock(handle: Any | None = None) -> None:
+    if handle is not None:
+        handle.close()
     try:
         LOCK.unlink()
     except FileNotFoundError:
@@ -425,10 +644,10 @@ def descriptor_queue(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def quarantine_partial(item: dict[str, Any], partial: Path, *, reason: str) -> Path:
+def quarantine_partial(item: dict[str, Any], partial: Path, *, reason: str, compute_hash: bool = True) -> Path:
     actual_bytes = partial.stat().st_size
-    actual_sha256 = sha256(partial)
-    quarantined = partial.with_name(partial.name + f".invalid-{int(time.time())}")
+    actual_sha256 = sha256(partial) if compute_hash else None
+    quarantined = partial.with_name(partial.name + f".invalid-{int(time.time())}-{uuid.uuid4().hex[:8]}")
     os.replace(partial, quarantined)
     log({
         "model": item["model"], "label": item["label"], "file": item["file"],
@@ -447,7 +666,127 @@ def final_is_verified(item: dict[str, Any], final: Path) -> bool:
     return sha256(final).lower() == item["sha256"].lower()
 
 
-def download(item: dict[str, Any], status: dict[str, Any]) -> bool:
+def open_download_response(
+    item: dict[str, Any],
+    *,
+    offset: int,
+    previous_identity: dict[str, str | None] | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> tuple[Any, dict[str, str | None]]:
+    headers = {"Accept-Encoding": "identity"}
+    if offset > 0:
+        headers["Range"] = f"bytes={offset}-"
+        identity = previous_identity or {}
+        if identity.get("etag"):
+            headers["If-Range"] = str(identity["etag"])
+        elif identity.get("last_modified"):
+            headers["If-Range"] = str(identity["last_modified"])
+    request = urllib.request.Request(item["url"], headers=headers, method="GET")
+    opener = opener or urllib.request.urlopen
+    try:
+        response = opener(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {408, 425, 429} or exc.code >= 500:
+            raise TransientDownloadError(f"HTTP_{exc.code}") from exc
+        raise DownloadProtocolError(f"HTTP_{exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        raise TransientDownloadError(str(exc)) from exc
+    try:
+        identity = validate_response(
+            response,
+            offset=offset,
+            expected_bytes=int(item["bytes"]),
+            previous_identity=previous_identity,
+        )
+    except Exception:
+        close = getattr(response, "close", None)
+        if close:
+            close()
+        raise
+    return response, identity
+
+
+def stream_response(
+    response: Any,
+    destination: Path,
+    *,
+    offset: int,
+    expected_bytes: int,
+    status: dict[str, Any] | None = None,
+) -> int:
+    current = offset
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = "ab" if offset else "wb"
+    last_status_at = 0.0
+    try:
+        with destination.open(mode) as handle:
+            while True:
+                if stop_requested():
+                    raise DownloadStopped("STOP_REQUESTED")
+                try:
+                    chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                    raise TransientDownloadError(str(exc)) from exc
+                if not chunk:
+                    break
+                # Check before writing. A remote body can never make the
+                # partial exceed the authoritative manifest length.
+                if current + len(chunk) > expected_bytes:
+                    raise OversizeTransfer(
+                        f"WRITE_WOULD_EXCEED_EXPECTED:{current}+{len(chunk)}>{expected_bytes}"
+                    )
+                handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+                current += len(chunk)
+                actual_disk = destination.stat().st_size
+                if actual_disk != current:
+                    raise DownloadError(f"DURABLE_SIZE_DISAGREEMENT:{actual_disk}!={current}")
+                if status is not None and time.monotonic() - last_status_at >= HEARTBEAT_SECONDS:
+                    update_status(
+                        status,
+                        downloaded_bytes=current,
+                        actual_disk_bytes=actual_disk,
+                        resume_offset=current,
+                        tracked_disk_disagreement=False,
+                    )
+                    last_status_at = time.monotonic()
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        close = getattr(response, "close", None)
+        if close:
+            close()
+    return current
+
+
+def transfer_once(
+    item: dict[str, Any],
+    destination: Path,
+    *,
+    offset: int,
+    previous_identity: dict[str, str | None] | None = None,
+    opener: Callable[..., Any] | None = None,
+    status: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, str | None]]:
+    response, identity = open_download_response(
+        item,
+        offset=offset,
+        previous_identity=previous_identity,
+        opener=opener,
+    )
+    record_artifact_identity(item, identity)
+    current = stream_response(
+        response,
+        destination,
+        offset=offset,
+        expected_bytes=int(item["bytes"]),
+        status=status,
+    )
+    return current, identity
+
+
+def download(item: dict[str, Any], status: dict[str, Any], *, opener: Callable[..., Any] | None = None) -> bool:
     final = Path(item["path"])
     partial = Path(str(final) + ".part")
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -455,56 +794,110 @@ def download(item: dict[str, Any], status: dict[str, Any]) -> bool:
     defer_terminal = bool(item.get("defer_model_terminal"))
     register_manifest_item(item)
     set_model_state(item["model"], "RETRY_PENDING" if partial.exists() else "METADATA_RESOLVED", label=label)
+    lock = acquire_artifact_lock(partial, str(status.get("worker_id", os.getpid())))
+    try:
+        if final_is_verified(item, final):
+            mark_manifest(item, "INTEGRITY_VERIFIED", actual_sha256=item["sha256"], actual_bytes=final.stat().st_size)
+            set_model_state(item["model"], "DOWNLOADING" if defer_terminal else "INTEGRITY_VERIFIED", label=label)
+            log({"model": item["model"], "label": label, "file": item["file"], "state": "INTEGRITY_VERIFIED", "bytes": final.stat().st_size, "sha256": item["sha256"], "note": "already verified"})
+            return True
 
-    if partial.exists() and partial.stat().st_size > item["bytes"]:
-        quarantine_partial(item, partial, reason="PARTIAL_LARGER_THAN_EXPECTED")
-        set_model_state(item["model"], "RETRY_PENDING", label=label, error="PARTIAL_LARGER_THAN_EXPECTED")
-    if final_is_verified(item, final):
-        mark_manifest(item, "INTEGRITY_VERIFIED", actual_sha256=item["sha256"], actual_bytes=final.stat().st_size)
-        set_model_state(item["model"], "DOWNLOADING" if defer_terminal else "INTEGRITY_VERIFIED", label=label)
-        log({"model": item["model"], "label": label, "file": item["file"], "state": "INTEGRITY_VERIFIED", "bytes": final.stat().st_size, "sha256": item["sha256"], "note": "already verified"})
-        return True
-
-    for attempt in range(1, MAX_INTEGRITY_RETRIES + 2):
         if partial.exists() and partial.stat().st_size > item["bytes"]:
-            quarantine_partial(item, partial, reason="PARTIAL_LARGER_THAN_EXPECTED_DURING_RETRY")
-        set_model_state(item["model"], "DOWNLOADING", label=label)
-        current = partial.stat().st_size if partial.exists() else 0
-        status.update({"current_model": label, "current_source": item["model"], "current_file": item["file"], "expected_bytes": item["bytes"], "retry_number": attempt, "downloaded_bytes": current, "percentage": round(current * 100 / item["bytes"], 2), "state": "DOWNLOADING", "last_error": None})
-        atomic_json(STATUS, {**status, "last_heartbeat": now()})
-        command = ["curl.exe", "--fail", "--location", "--retry", "5", "--retry-all-errors", "--connect-timeout", "30", "--continue-at", "-", "--output", str(partial), item["url"]]
-        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-        while process.poll() is None:
+            quarantine_partial(item, partial, reason="PARTIAL_LARGER_THAN_EXPECTED")
+            set_model_state(item["model"], "RETRY_PENDING", label=label, error="PARTIAL_LARGER_THAN_EXPECTED")
+
+        for attempt in range(1, MAX_INTEGRITY_RETRIES + 2):
+            if stop_requested():
+                raise DownloadStopped("STOP_REQUESTED")
+            set_model_state(item["model"], "DOWNLOADING", label=label)
             current = partial.stat().st_size if partial.exists() else 0
-            update_status(status, state="DOWNLOADING", downloaded_bytes=current, expected_bytes=item["bytes"], percentage=round(current * 100 / item["bytes"], 2), retry_number=attempt)
-            time.sleep(HEARTBEAT_SECONDS)
-        current = partial.stat().st_size if partial.exists() else 0
-        if process.returncode != 0:
-            set_model_state(item["model"], "RETRY_PENDING", label=label, error=f"curl_exit_{process.returncode}")
-            log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "error": f"curl_exit_{process.returncode}"})
-            continue
-        actual = sha256(partial)
-        if current != item["bytes"] or actual.lower() != item["sha256"].lower():
-            quarantine_partial(item, partial, reason="SIZE_OR_HASH_MISMATCH")
-            set_model_state(item["model"], "RETRY_PENDING", label=label, error="SIZE_OR_HASH_MISMATCH")
-            log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "sha256": actual, "expected_sha256": item["sha256"], "error": "SIZE_OR_HASH_MISMATCH"})
-            continue
-        os.replace(partial, final)
-        mark_manifest(item, "INTEGRITY_VERIFIED", actual_sha256=actual, actual_bytes=current)
-        set_model_state(item["model"], "DOWNLOADING" if defer_terminal else "INTEGRITY_VERIFIED", label=label)
-        log({"model": item["model"], "label": label, "file": item["file"], "state": "INTEGRITY_VERIFIED", "bytes": current, "sha256": actual, "attempt": attempt})
-        update_status(status, state="INTEGRITY_VERIFIED", downloaded_bytes=current, percentage=100, retry_number=attempt, last_error=None)
-        return True
-    set_model_state(item["model"], "FAILED_RETRY_EXHAUSTED", label=label, error="MAX_INTEGRITY_RETRIES")
-    update_status(status, state="FAILED_RETRY_EXHAUSTED", last_error="MAX_INTEGRITY_RETRIES")
-    log({"model": item["model"], "label": label, "file": item["file"], "state": "FAILED_RETRY_EXHAUSTED", "attempts": MAX_INTEGRITY_RETRIES + 1})
-    return False
+            identity = artifact_identity(item)
+            status.update({
+                "current_model": label, "current_source": item["model"], "current_file": item["file"],
+                "expected_bytes": item["bytes"], "retry_number": attempt, "downloaded_bytes": current,
+                "actual_disk_bytes": current, "resume_offset": current,
+                "tracked_disk_disagreement": False,
+                "percentage": round(current * 100 / item["bytes"], 2), "state": "DOWNLOADING", "last_error": None,
+                "source_etag": identity.get("etag"), "source_last_modified": identity.get("last_modified"),
+            })
+            atomic_json(STATUS, {**status, "last_heartbeat": now()})
+            try:
+                current, identity = transfer_once(
+                    item, partial, offset=current, previous_identity=identity, opener=opener, status=status,
+                )
+            except ResumeNotHonored as exc:
+                # Never append an HTTP 200 body to an existing partial. Try a
+                # separate zero-based temporary file instead.
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "RANGE_NOT_HONORED", "attempt": attempt, "resume_offset": current, "error": str(exc)})
+                restart = partial.with_name(partial.name + f".restart-{uuid.uuid4().hex[:10]}")
+                try:
+                    fresh_current, identity = transfer_once(item, restart, offset=0, previous_identity={}, opener=opener, status=status)
+                    current = fresh_current
+                    if current != item["bytes"]:
+                        raise TransientDownloadError(f"SHORT_FRESH_TRANSFER:{current}")
+                    actual = sha256(restart)
+                    if actual.lower() != item["sha256"].lower():
+                        raise DownloadProtocolError("FRESH_TRANSFER_HASH_MISMATCH")
+                    if partial.exists() and partial.stat().st_size:
+                        quarantine_partial(item, partial, reason="REPLACED_AFTER_HTTP_200_RESUME", compute_hash=False)
+                    os.replace(restart, partial)
+                except DownloadStopped:
+                    raise
+                except Exception:
+                    if restart.exists():
+                        quarantine_partial(item, restart, reason="FAILED_FRESH_RESTART", compute_hash=False)
+                    raise
+            except ArtifactIdentityChanged as exc:
+                current = partial.stat().st_size if partial.exists() else 0
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "REMOTE_IDENTITY_CHANGED", "attempt": attempt, "bytes": current, "error": str(exc)})
+                if partial.exists() and partial.stat().st_size:
+                    quarantine_partial(item, partial, reason="REMOTE_IDENTITY_CHANGED", compute_hash=False)
+                clear_artifact_identity(item)
+                continue
+            except DownloadStopped:
+                raise
+            except OversizeTransfer as exc:
+                current = partial.stat().st_size if partial.exists() else 0
+                if partial.exists() and partial.stat().st_size:
+                    quarantine_partial(item, partial, reason="REMOTE_BODY_EXCEEDS_EXPECTED", compute_hash=False)
+                set_model_state(item["model"], "RETRY_PENDING", label=label, error="REMOTE_BODY_EXCEEDS_EXPECTED")
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "error": str(exc)})
+                continue
+            except (TransientDownloadError, DownloadProtocolError, DownloadError) as exc:
+                current = partial.stat().st_size if partial.exists() else 0
+                set_model_state(item["model"], "RETRY_PENDING", label=label, error=str(exc))
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "error": str(exc)})
+                continue
+
+            current = partial.stat().st_size if partial.exists() else 0
+            if current != item["bytes"]:
+                set_model_state(item["model"], "RETRY_PENDING", label=label, error="SHORT_TRANSFER")
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "error": "SHORT_TRANSFER"})
+                continue
+            actual = sha256(partial)
+            if actual.lower() != item["sha256"].lower():
+                quarantine_partial(item, partial, reason="SIZE_OR_HASH_MISMATCH")
+                set_model_state(item["model"], "RETRY_PENDING", label=label, error="SIZE_OR_HASH_MISMATCH")
+                log({"model": item["model"], "label": label, "file": item["file"], "state": "RETRY_PENDING", "attempt": attempt, "bytes": current, "expected_bytes": item["bytes"], "sha256": actual, "expected_sha256": item["sha256"], "error": "SIZE_OR_HASH_MISMATCH"})
+                continue
+            os.replace(partial, final)
+            mark_manifest(item, "INTEGRITY_VERIFIED", actual_sha256=actual, actual_bytes=current)
+            set_model_state(item["model"], "DOWNLOADING" if defer_terminal else "INTEGRITY_VERIFIED", label=label)
+            log({"model": item["model"], "label": label, "file": item["file"], "state": "INTEGRITY_VERIFIED", "bytes": current, "sha256": actual, "attempt": attempt})
+            update_status(status, state="INTEGRITY_VERIFIED", downloaded_bytes=current, actual_disk_bytes=current, resume_offset=current, percentage=100, retry_number=attempt, last_error=None)
+            return True
+        set_model_state(item["model"], "FAILED_RETRY_EXHAUSTED", label=label, error="MAX_INTEGRITY_RETRIES")
+        update_status(status, state="FAILED_RETRY_EXHAUSTED", last_error="MAX_INTEGRITY_RETRIES")
+        log({"model": item["model"], "label": label, "file": item["file"], "state": "FAILED_RETRY_EXHAUSTED", "attempts": MAX_INTEGRITY_RETRIES + 1})
+        return False
+    finally:
+        release_artifact_lock(lock)
 
 
 def main() -> int:
     STATE.mkdir(parents=True, exist_ok=True)
     worker_id = f"download-worker-{uuid.uuid4().hex[:12]}"
-    acquire_lock(worker_id)
+    lock_handle = acquire_lock(worker_id)
     manifest = ensure_frozen_queue(read_json(MANIFEST, {}))
     for verified_label in ("Whisper Large v3", "Audar Turbo Q4 + projector", "Audar Flash Q8 + projector", "FireRedVAD", "Audar Turbo Q8"):
         for frozen in manifest["frozen_queue"]:
@@ -516,10 +909,12 @@ def main() -> int:
     queue = descriptor_queue(manifest)
     manifest = ensure_frozen_queue(read_json(MANIFEST, {}))
     queue = descriptor_queue(manifest)
-    status: dict[str, Any] = {"worker_id": worker_id, "pid": os.getpid(), "started_at": now(), "last_heartbeat": now(), "current_model": None, "current_file": None, "downloaded_bytes": 0, "expected_bytes": 0, "percentage": 0, "retry_number": 0, "state": "STARTING", "last_error": None, "next_model": queue[0]["label"] if queue else None, "queue_summary": queue_summary(manifest), "remaining_download_bytes": estimate_remaining_bytes(manifest, queue)}
+    status: dict[str, Any] = {"worker_id": worker_id, "pid": os.getpid(), "started_at": now(), "last_heartbeat": now(), "current_model": None, "current_source": None, "current_file": None, "current_path": None, "downloaded_bytes": 0, "actual_disk_bytes": 0, "resume_offset": 0, "tracked_disk_disagreement": False, "expected_bytes": 0, "percentage": 0, "retry_number": 0, "state": "STARTING", "last_error": None, "next_model": queue[0]["label"] if queue else None, "queue_summary": queue_summary(manifest), "remaining_download_bytes": estimate_remaining_bytes(manifest, queue), "stop_requested": False}
     atomic_json(STATUS, status)
     log({"event": "WORKER_STARTED", "worker_id": worker_id, "pid": os.getpid(), "queue_length": len(queue)})
     try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, request_stop)
         groups: list[tuple[str, list[dict[str, Any]]]] = []
         for item in queue:
             if groups and groups[-1][0] == item["label"]:
@@ -532,7 +927,7 @@ def main() -> int:
             group_ok = True
             for item in group:
                 status["next_model"] = next_model
-                update_status(status, state="QUEUED", current_model=label, current_source=item["model"], current_file=item["file"], queue_summary=queue_summary(ensure_frozen_queue(read_json(MANIFEST, {}))))
+                update_status(status, state="QUEUED", current_model=label, current_source=item["model"], current_file=item["file"], current_path=str(item["path"]), queue_summary=queue_summary(ensure_frozen_queue(read_json(MANIFEST, {}))))
                 if not download(item, status):
                     group_ok = False
                     break
@@ -551,11 +946,17 @@ def main() -> int:
             update_status(status, state="WAITING_METADATA", current_model=None, current_file=None, next_model=pending, queue_summary=summary)
             log({"event": "QUEUE_PENDING", "worker_id": worker_id, "queue_summary": summary, "next_model": pending})
             while True:
+                if stop_requested():
+                    raise DownloadStopped("STOP_REQUESTED")
                 time.sleep(HEARTBEAT_SECONDS)
                 update_status(status, state="WAITING_METADATA", current_model=None, current_file=None, next_model=pending, queue_summary=summary)
         return 0
+    except DownloadStopped as exc:
+        update_status(status, state="STOPPED", stop_requested=True, last_error=str(exc), actual_disk_bytes=status.get("actual_disk_bytes", 0), resume_offset=status.get("actual_disk_bytes", 0))
+        log({"event": "WORKER_STOPPED", "worker_id": worker_id, "pid": os.getpid(), "reason": str(exc), "current_model": status.get("current_model"), "current_path": status.get("current_path"), "durable_local_bytes": status.get("actual_disk_bytes", 0), "retry_number": status.get("retry_number", 0)})
+        return 0
     finally:
-        release_lock()
+        release_lock(lock_handle)
 
 
 if __name__ == "__main__":

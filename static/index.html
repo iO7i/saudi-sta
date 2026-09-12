@@ -56,10 +56,15 @@
             </div>
             <div class="audio-row">
               <label class="upload"><input id="audioFile" type="file" accept="audio/wav,audio/webm,audio/ogg,audio/mpeg,audio/mp4"> <span data-ar="رفع ملف صوت" data-en="Upload audio">رفع ملف صوت</span></label>
-              <button id="recordButton" class="secondary" type="button" data-ar="تسجيل" data-en="Record">تسجيل</button>
+              <button id="recordButton" type="button" data-ar="تسجيل" data-en="Record">تسجيل</button>
+              <button id="stopRecordingButton" class="secondary" type="button" disabled data-ar="إيقاف" data-en="Stop">إيقاف</button>
+              <button id="replayButton" class="secondary" type="button" disabled data-ar="إعادة التشغيل" data-en="Replay">إعادة التشغيل</button>
+              <button id="rerecordButton" class="secondary" type="button" data-ar="إعادة التسجيل" data-en="Re-record">إعادة التسجيل</button>
+              <button id="saveRecordingButton" class="secondary" type="button" disabled data-ar="حفظ التسجيل" data-en="Save recording">حفظ التسجيل</button>
               <span id="audioState" class="muted" data-ar="لا يوجد تسجيل" data-en="No recording">لا يوجد تسجيل</span>
             </div>
             <audio id="audioPreview" controls hidden></audio>
+            <p id="audioIdentity" class="small mono muted">—</p>
             <label class="check"><input id="manualTranscript" type="checkbox"> <span data-ar="هذا نص يدوي مرتبط بالتسجيل، وليس ناتج تفريغ صوتي" data-en="This is manual text attached to recording, not ASR output">هذا نص يدوي مرتبط بالتسجيل، وليس ناتج تفريغ صوتي</span></label>
             <label class="field"><span data-ar="وقت المرجع" data-en="Reference time">وقت المرجع</span><input id="referenceTime" class="mono" value="2026-09-11T09:00:00+03:00"></label>
           </section>
@@ -118,6 +123,8 @@
           <label class="check"><input id="seedSemanticReviewed" type="checkbox"> <span data-ar="راجعت المرجع الدلالي والنتيجة المتوقعة" data-en="I reviewed the semantic reference and expected outcome">راجعت المرجع الدلالي والنتيجة المتوقعة</span></label>
           <label class="field"><span data-ar="المقاطع الحرجة JSON (مثال: [{\"text\":\"ثمانية\",\"label\":\"CORRECTION_ERROR\"}])" data-en="Critical spans JSON (e.g. [{\"text\":\"eight\",\"label\":\"CORRECTION_ERROR\"}])">المقاطع الحرجة JSON</span><textarea id="seedCriticalSpans" rows="3">[]</textarea></label>
            <div class="workbench-grid"><label class="field"><span data-ar="معرّف المراجع" data-en="Reviewer ID">معرّف المراجع</span><input id="seedReviewer" placeholder="وسم محلي اختياري"></label><label class="field"><span data-ar="جلسة التسجيل" data-en="Recording session">جلسة التسجيل</span><input id="seedSession" placeholder="مثال: home-evening-01"></label></div>
+           <div class="workbench-grid"><label class="field"><span data-ar="وضع مقارنة التفريغ" data-en="STT tournament mode">وضع مقارنة التفريغ</span><select id="sttMode"><option value="Performance">الأداء · Performance</option><option value="Speed">السرعة · Speed</option><option value="Cost">التكلفة · Cost</option><option value="Manual">يدوي · Manual</option></select></label><label class="field"><span data-ar="النموذج اليدوي" data-en="Manual binding">النموذج اليدوي</span><select id="sttManualBinding"><option value="">—</option></select></label></div>
+           <div id="sttBindingChoices" class="small muted"></div>
           <label class="field"><span data-ar="ملاحظات" data-en="Notes">ملاحظات</span><input id="seedNotes" maxlength="1000"></label><div class="button-row"><button id="saveSeedCase" type="button" data-ar="حفظ كمرجع بشري" data-en="Save as human reference">حفظ كمرجع بشري</button><button id="compareRecording" type="button" class="secondary" data-ar="قارن نماذج التفريغ" data-en="Compare transcription models">قارن نماذج التفريغ</button><button id="refreshSeedCases" type="button" class="secondary" data-ar="تحديث الحالات" data-en="Refresh cases">تحديث الحالات</button></div>
         </section>
          <section class="panel"><h3 data-ar="الحالات المحفوظة" data-en="Saved cases">الحالات المحفوظة</h3><pre id="seedCasesOutput" class="muted">لا توجد حالات راجعها بشر بعد.</pre></section>

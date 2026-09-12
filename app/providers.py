@@ -39,7 +39,7 @@ class LocalArtifactRegistry:
     def __init__(self, manifest_path: str | None = None) -> None:
         configured = manifest_path or os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFEST")
         configured_many = os.getenv("SAUDI_STA_LOCAL_MODEL_MANIFESTS")
-        default_paths = [Path("D:/saudi-sta-models/saudi-sta-local-models.json"), Path("D:/models/whisper/saudi-sta-local-models.json"), Path("D:/models/audar/Audar-ASR-V1-Turbo/saudi-sta-audar-q4-manifest.json")]
+        default_paths = [Path("D:/saudi-sta-models/saudi-sta-local-models.json"), Path("D:/models/whisper/saudi-sta-local-models.json"), Path("D:/models/audar/Audar-ASR-V1-Turbo/saudi-sta-audar-q4-manifest.json"), Path("D:/models/_downloads/manifest.json")]
         raw_paths = ([configured] if configured else []) + ([item for item in configured_many.split(os.pathsep) if item] if configured_many else [])
         if not raw_paths:
             raw_paths.extend(str(path) for path in default_paths if path.is_file())
@@ -67,7 +67,57 @@ class LocalArtifactRegistry:
                 continue
             entries = body.get("models", []) if isinstance(body, dict) else []
             result.extend(entry for entry in entries if isinstance(entry, dict))
+            if isinstance(body, dict):
+                result.extend(self._download_entries(body))
         return result
+
+    @staticmethod
+    def _download_entries(body: dict[str, Any]) -> list[dict[str, Any]]:
+        """Adapt passive downloader metadata into the normal local GGUF manifest.
+
+        Only the final artifact paths from the manifest are retained.  The
+        downloader's temporary ``.part`` path is intentionally never opened,
+        stat'ed, hashed, or returned to callers.
+        """
+        adapted: list[dict[str, Any]] = []
+        for queued in body.get("queue", []):
+            if not isinstance(queued, dict):
+                continue
+            model = str(queued.get("model", ""))
+            candidate = str(queued.get("candidate_id", ""))
+            label = " ".join((model, candidate)).lower()
+            if "qwen3.8-27b" not in label and "qwen38_27b" not in label:
+                continue
+            artifacts: list[dict[str, Any]] = []
+            statuses: list[str] = []
+            for file_entry in queued.get("files", []):
+                if not isinstance(file_entry, dict) or not file_entry.get("path") or not file_entry.get("sha256"):
+                    continue
+                # file_entry["path"] is the verified final path.  No partial
+                # path is constructed or touched here.
+                artifacts.append({
+                    "path": str(file_entry["path"]),
+                    "bytes": int(file_entry.get("bytes", 0)),
+                    "sha256": str(file_entry["sha256"]),
+                    "remote_oid": file_entry.get("remote_oid"),
+                })
+                if file_entry.get("status"):
+                    statuses.append(str(file_entry["status"]))
+            if not artifacts:
+                continue
+            adapted.append({
+                "id": "QWEN3_8_27B_Q6_K_L",
+                "provider": "llama_cpp_local",
+                "family": "Qwen3.8-27B",
+                "roles": ["summarize", "actionize", "function_call", "verify"],
+                "revision": queued.get("revision"),
+                "quantization": "Q6_K_L",
+                "artifacts": artifacts,
+                "download_state": "INTEGRITY_VERIFIED" if statuses and all(item == "INTEGRITY_VERIFIED" for item in statuses) else (statuses[0] if statuses else "PLANNED"),
+                "source": queued.get("source"),
+                "evidence": "PASSIVE_DOWNLOAD_MANIFEST_METADATA",
+            })
+        return adapted
 
     def verify(self, entry: dict[str, Any]) -> tuple[bool, str | None, list[dict[str, Any]]]:
         artifacts = entry.get("artifacts")
@@ -176,7 +226,7 @@ class OllamaAdapter:
                     id=f"ollama:{name}:{role}", provider=self.provider, model_id=name, revision_or_digest=remote_digest,
                     role=Role(role), prompt_version="local-v1", schema_version="sta-v1", execution_mode=ExecutionMode.LOCAL,
                     capability_provenance=CapabilityProvenance.VERIFIED_LOCAL, capabilities=[role, "structured_output"],
-                    tool_mode="NATIVE" if bool(entry.get("native_tools", False)) and role == "function_call" else "JSON_EMULATION",
+                    tool_mode="NATIVE_TOOL_CALL" if bool(entry.get("native_tools", False)) and role == "function_call" else "STRUCTURED_TOOL_EMULATION",
                 ))
             self.checks.append({"check": "artifact", "model": name, "result": "verified locally"})
         return result
@@ -295,6 +345,7 @@ class TransformersWhisperAdapter:
             capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
             capabilities=["transcribe", "segment_timestamps"] if status["available"] else [], available=status["available"],
             unavailable_reason=status["reason"], tool_mode="NONE",
+            artifact_hashes=[str(item.get("sha256")) for item in status.get("artifacts", []) if item.get("sha256")],
         )
 
     @staticmethod
@@ -394,10 +445,12 @@ class TransformersWhisperAdapter:
         for chunk in result.get("chunks", []):
             timestamp = chunk.get("timestamp") or (None, None)
             segments.append({"start": timestamp[0], "end": timestamp[1], "text": str(chunk.get("text", "")).strip()})
+        elapsed = (time.perf_counter() - started) * 1000
         return {
             "text": str(result.get("text", "")).strip(), "segments": segments, "language": "ar",
             "runtime": "transformers+cpu", "cold_start": cold_start, "model_load_ms": self._load_ms if cold_start else 0.0,
-            "latency_ms": (time.perf_counter() - started) * 1000,
+            "latency_ms": elapsed, "total_latency_ms": elapsed, "inference_latency_ms": elapsed,
+            "provider_diagnostics": {"language": "ar", "runtime": "transformers+cpu"},
             "resource_measurement": {"runtime": "transformers+cpu", "execution_mode": "cpu", "artifact_bytes": sum(item["bytes"] for item in status.get("artifacts", [])), "peak_ram_or_vram": None},
             "signals": {
                 "average_log_probability": {"available": False, "value": None},
@@ -473,6 +526,7 @@ class AudarMtmdAdapter:
             prompt_version="audar-ar-v1", schema_version="sta-v2", generation={"temperature": 0, "max_tokens": 512, "runtime": "llama.cpp mtmd", "precision": entry.get("precision", "Q4_K_M")},
             execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
             capabilities=["transcribe", "arabic", "code_switching"] if status["available"] else [], available=status["available"], unavailable_reason=status["reason"], tool_mode="NONE",
+            artifact_hashes=[str(item.get("sha256")) for item in artifacts if item.get("sha256")],
         )
 
     def discover(self) -> list[RoleBinding]:
@@ -493,6 +547,7 @@ class AudarMtmdAdapter:
             prompt_version="audar-ar-v1", schema_version="sta-v2", generation={"temperature": 0, "max_tokens": 512, "runtime": "llama.cpp mtmd", "precision": entry.get("precision")},
             execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
             capabilities=["transcribe", "arabic", "code_switching"] if status["available"] else [], available=status["available"], unavailable_reason=status["reason"], tool_mode="NONE",
+            artifact_hashes=[str(item.get("sha256")) for item in artifacts if item.get("sha256")],
         )
 
     @staticmethod
@@ -537,7 +592,9 @@ class AudarMtmdAdapter:
             raise LocalModelUnavailable(f"LOCAL_AUDAR_INFERENCE_FAILED:exit={return_code}")
         return {
             "text": self._text_from_cli(raw), "segments": [], "language": None, "no_speech_probability": None,
-            "raw_output": raw, "runtime": "llama.cpp mtmd", "latency_ms": elapsed, "model_load_ms": None, "cold_start": None,
+            "raw_output": raw, "runtime": "llama.cpp mtmd", "latency_ms": elapsed, "total_latency_ms": elapsed,
+            "inference_latency_ms": elapsed, "model_load_ms": None, "cold_start": None,
+            "provider_diagnostics": {"return_code": return_code, "stderr": _stderr[-2000:], "runtime_path": str(entry["runtime_path"])},
             "resource_measurement": {"runtime": "llama.cpp mtmd", "execution_mode": "cpu", "artifact_bytes": sum(int(item.get("bytes", 0)) for item in status.get("artifacts", [])), "peak_ram_or_vram": None},
             "signals": {"average_log_probability": {"available": False, "value": None}, "no_speech_probability": {"available": False, "value": None}, "compression_ratio": {"available": False, "value": None}, "segment_stability": {"available": False, "value": None}, "alternative_decoding": {"available": False, "value": None}},
         }
@@ -578,7 +635,7 @@ class LlamaCppAdapter:
             ))
             roles = entry.get("roles", ["summarize", "actionize", "function_call"])
             for role_value in roles:
-                if role_value not in {"summarize", "actionize", "function_call"}:
+                if role_value not in {"summarize", "actionize", "function_call", "verify"}:
                     continue
                 role = Role(role_value)
                 bindings.append(RoleBinding(
@@ -589,7 +646,8 @@ class LlamaCppAdapter:
                     execution_mode=ExecutionMode.LOCAL,
                     capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
                     capabilities=[role.value, "structured_json", "tool_selection"] if status["available"] else [],
-                    available=status["available"], unavailable_reason=status["reason"], tool_mode="JSON_EMULATION" if role == Role.FUNCTION_CALL else "NONE",
+                    available=status["available"], unavailable_reason=status["reason"], tool_mode="STRUCTURED_TOOL_EMULATION" if role == Role.FUNCTION_CALL else "NONE",
+                    artifact_hashes=[str(item.get("sha256")) for item in status.get("artifacts", []) if item.get("sha256")],
                 ))
         return bindings
 
@@ -667,6 +725,8 @@ class LlamaCppAdapter:
             "reasoning": binding.generation.get("reasoning") or binding.generation.get("reasoning_effort"),
             "model_id": binding.model_id, "revision_or_digest": binding.revision_or_digest,
             "schema_version": binding.schema_version, "prompt_version": binding.prompt_version,
+            "artifact_hashes": list(getattr(binding, "artifact_hashes", []) or []),
+            "tool_mode": binding.tool_mode,
         }
 
     def invoke(
@@ -693,12 +753,12 @@ class LlamaCppAdapter:
                 "messages": messages, "temperature": float(binding.generation.get("temperature", 0)),
                 "max_tokens": int(binding.generation.get("max_tokens", 500)),
             }
-            if binding.tool_mode == "NATIVE" and tools:
+            if binding.tool_mode in {"NATIVE", "NATIVE_TOOL_CALL"} and tools:
                 request["tools"] = tools
                 request["tool_choice"] = "auto"
             else:
-                # JSON emulation is explicit and retained as a different mode
-                # from native tool calls; the model is still schema-constrained
+                # Structured emulation is explicit and retained as a different
+                # mode from native tool calls; the model is schema-constrained
                 # where the selected llama.cpp build supports it.
                 request["response_format"] = {"type": "json_object", "schema": json_schema}
             reasoning_format = binding.generation.get("reasoning_format")

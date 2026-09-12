@@ -41,6 +41,16 @@ class ExecutionMode(str, Enum):
     DISABLED = "DISABLED"
 
 
+class StageExecutionState(str, Enum):
+    """Lifecycle state for an independently configurable pipeline stage."""
+
+    READY = "READY"
+    BYPASSED = "BYPASSED"
+    UNAVAILABLE = "UNAVAILABLE"
+    BLOCKED = "BLOCKED"
+    FAILED = "FAILED"
+
+
 class RunStatus(str, Enum):
     READY = "READY"
     NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
@@ -82,7 +92,9 @@ class RoleBinding(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     available: bool = True
     unavailable_reason: str | None = None
-    tool_mode: Literal["NATIVE", "JSON_EMULATION", "NONE"] = "NONE"
+    stage_state: StageExecutionState = StageExecutionState.READY
+    artifact_hashes: list[str] = Field(default_factory=list)
+    tool_mode: Literal["NATIVE", "NATIVE_TOOL_CALL", "JSON_EMULATION", "STRUCTURED_TOOL_EMULATION", "NONE"] = "NONE"
 
 
 class Recipe(BaseModel):
@@ -148,9 +160,11 @@ class ToolProposal(BaseModel):
     status: RunStatus
     tool_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
-    source_revision: int
+    source_revision: int = Field(ge=1)
     supporting_spans: list[SourceSpan] = Field(default_factory=list)
-    tool_mode: Literal["NATIVE", "JSON_EMULATION", "NONE"]
+    missing_fields: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    tool_mode: Literal["NATIVE", "NATIVE_TOOL_CALL", "JSON_EMULATION", "STRUCTURED_TOOL_EMULATION", "NONE"]
     evidence_type: str
     explanation: str | None = None
 

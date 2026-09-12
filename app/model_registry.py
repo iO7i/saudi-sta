@@ -8,6 +8,7 @@ operator actions.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,7 @@ PLANNED_MODELS: list[dict[str, Any]] = [
     {
         "id": "LIVEKIT_TURN_DETECTOR_V1_MINI", "family": "LiveKit Turn Detector v1-mini", "stage": ["turn_detection"], "source_repository": "livekit/turn-detector", "revision": "fba34c38ad5d30a63ebb83a9e6bf271cf4c91d67", "precision": "INT8_ONNX", "runtime": "ONNX Runtime CPU", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "https://huggingface.co/livekit/turn-detector", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "livekit/turn-detector-v1-mini", "artifacts": [_artifact("model_quantized.onnx", bytes_=165035487, sha256="4e685767c3643b0363c9f826a98325683f29e9c7d550162c8e8740ba33aa31aa")], "verified_capabilities": [], "unverified_claims": ["audio turn detection"], "evidence_notes": "Pinned artifact and SHA-256 resolved from the existing download manifest; ONNX load is separately probed, but completed/pause/continuation capability remains pending until the tokenizer/protocol bundle is present."},
     {
-        "id": "QWEN3_8_27B_Q6_K_L", "family": "Qwen3.8-27B", "stage": ["summarize", "actionize", "function_call"], "source_repository": "Qwen/Qwen3.8-27B (GGUF conversion)", "revision": None, "precision": "Q6_K_L", "runtime": "llama.cpp", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "qwen/Qwen3.8-27B-Q6_K_L", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["multilingual tools", "structured output"], "evidence_notes": "Planned conversion; lineage and license must be captured before download."},
+        "id": "QWEN3_8_27B_Q6_K_L", "family": "Qwen3.8-27B", "stage": ["summarize", "actionize", "function_call"], "source_repository": "Qwen/Qwen3.8-27B (GGUF conversion)", "revision": None, "precision": "Q6_K_L", "runtime": "llama.cpp", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "qwen/Qwen3.8-27B-Q6_K_L", "artifacts": [_artifact("Qwen3.8-27B-UD-Q6_K_L.gguf", bytes_=24193919904, sha256="121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4")], "verified_capabilities": [], "unverified_claims": ["multilingual tools", "structured output"], "evidence_notes": "Pinned artifact metadata; certification begins only after the scanner observes the final artifact as integrity-verified."},
     {
         "id": "BTL4_Q6_K_L", "family": "BTL-4", "stage": ["summarize", "actionize", "function_call"], "source_repository": "BTL-4 GGUF conversion", "revision": None, "precision": "Q6_K_L", "runtime": "llama.cpp", "local_or_hosted": "LOCAL", "license_id": "UNKNOWN", "license_source": "UNKNOWN", "commercial_status": "UNKNOWN", "redistribution_status": "UNKNOWN", "teacher_use_status": "UNKNOWN", "training_eligibility": "UNKNOWN", "monetary_marginal_cost": 0, "artifact_root": "btl/BTL-4-Q6_K_L", "artifacts": [], "verified_capabilities": [], "unverified_claims": ["function calling"], "evidence_notes": "Planned conversion; official upstream and license are not yet locally verified."},
     {
@@ -103,6 +104,40 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _passive_download_artifacts(root: Path, plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Read final-path metadata from the downloader manifest only.
+
+    The scanner never constructs, opens, stats, hashes, renames, or otherwise
+    touches a temporary ``.part`` path.  A verified manifest entry is accepted
+    only when its final path exists and has the declared byte count.
+    """
+    manifest_path = root / "_downloads" / "manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        body = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    label = f"{plan.get('id', '')} {plan.get('family', '')}".lower()
+    if "qwen3_8_27b" not in label and "qwen3.8-27b" not in label:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    for queue_entry in body.get("queue", []):
+        if not isinstance(queue_entry, dict):
+            continue
+        queue_label = " ".join((str(queue_entry.get("model", "")), str(queue_entry.get("candidate_id", "")))).lower()
+        if "qwen3.8-27b" not in queue_label and "qwen38_27b" not in queue_label:
+            continue
+        for file_entry in queue_entry.get("files", []):
+            if not isinstance(file_entry, dict) or not file_entry.get("path") or not file_entry.get("sha256"):
+                continue
+            found[str(file_entry["sha256"]).lower()] = file_entry
+            found[str(file_entry.get("name", "")).lower()] = file_entry
+    return found
+
+
 def configured_roots() -> list[Path]:
     raw = os.getenv("SAUDI_STA_MODEL_ROOTS", r"D:\models")
     return [Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip()]
@@ -115,22 +150,28 @@ def scan_models(roots: list[Path] | None = None) -> list[dict[str, Any]]:
         result = dict(plan)
         root = next((candidate for candidate in roots if candidate.exists() or candidate.drive), roots[0] if roots else Path("D:/models"))
         model_dir = root / str(plan["artifact_root"])
+        passive_artifacts = _passive_download_artifacts(root, plan)
         artifacts = []
         missing = False
         any_present = False
         all_verified = bool(plan.get("artifacts"))
         for spec in plan.get("artifacts", []):
-            path = model_dir / spec["path"]
+            passive = passive_artifacts.get(str(spec.get("sha256", "")).lower()) or passive_artifacts.get(Path(spec["path"]).name.lower())
+            path = Path(str(passive["path"])) if passive else model_dir / spec["path"]
             present = path.is_file()
             any_present = any_present or present
             item = {"path": str(path), "expected_bytes": spec.get("expected_bytes"), "sha256": spec.get("sha256"), "present": present}
             if present:
                 actual_bytes = path.stat().st_size
                 item["bytes"] = actual_bytes
-                item["local_sha256"] = _sha256(path) if spec.get("sha256") else None
-                if spec.get("expected_bytes") is not None and actual_bytes != spec["expected_bytes"]:
+                manifest_verified = passive and passive.get("status") == "INTEGRITY_VERIFIED" and actual_bytes == int(passive.get("bytes", actual_bytes))
+                size_matches = spec.get("expected_bytes") is None or actual_bytes == spec["expected_bytes"]
+                item["local_sha256"] = _sha256(path) if spec.get("sha256") and size_matches and not manifest_verified else None
+                if not size_matches:
                     all_verified = False
                     item["integrity"] = "SIZE_MISMATCH"
+                elif manifest_verified:
+                    item["integrity"] = "VERIFIED_BY_DOWNLOAD_MANIFEST"
                 elif spec.get("sha256") and item["local_sha256"].lower() != spec["sha256"].lower():
                     all_verified = False
                     item["integrity"] = "HASH_MISMATCH"

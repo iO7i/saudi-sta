@@ -6,10 +6,10 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from .schemas import Recipe, Role, RunStatus, SemanticPlan, SourceSpan, SummaryResult, ToolProposal
+from .schemas import PIPELINE_STAGES, Recipe, Role, RunStatus, SemanticPlan, SourceSpan, StageExecutionState, SummaryResult, ToolProposal
 
 
 TOOL_SCHEMAS: dict[str, dict[str, type]] = {
@@ -19,6 +19,11 @@ TOOL_SCHEMAS: dict[str, dict[str, type]] = {
     "revise_draft": {"draft_id": str, "patch": dict},
     "cancel_draft": {"draft_id": str},
     "request_clarification": {"question": str, "missing_fields": list},
+}
+
+TOOL_MODE_ALIASES = {
+    "NATIVE": "NATIVE_TOOL_CALL",
+    "JSON_EMULATION": "STRUCTURED_TOOL_EMULATION",
 }
 
 
@@ -235,18 +240,49 @@ def validate_tool_proposal(proposal: ToolProposal) -> None:
     if set(actual) != set(expected):
         raise ValueError("TOOL_ARGUMENTS_MUST_MATCH_SCHEMA_EXACTLY")
     for key, expected_type in expected.items():
+        if expected_type is int and isinstance(actual[key], bool):
+            raise ValueError(f"INVALID_TOOL_ARGUMENT_TYPE:{key}")
         if not isinstance(actual[key], expected_type):
             raise ValueError(f"INVALID_TOOL_ARGUMENT_TYPE:{key}")
+    if proposal.source_revision < 1:
+        raise ValueError("INVALID_SOURCE_REVISION")
+    if proposal.tool_name in {"create_note_draft", "create_reminder_draft"} and any(
+        not isinstance(actual[key], str) or not actual[key].strip() for key in ("title",)
+    ):
+        raise ValueError("INVALID_DRAFT_TITLE")
     if proposal.tool_name == "add_list_items" and (not actual["items"] or not all(isinstance(x, str) and x for x in actual["items"])):
         raise ValueError("INVALID_LIST_ITEMS")
-    if proposal.tool_name == "create_reminder_draft" and actual["meridiem"] not in {"AM", "PM"}:
-        raise ValueError("INVALID_MERIDIEM")
+    if proposal.tool_name == "create_reminder_draft":
+        if actual["meridiem"] not in {"AM", "PM"}:
+            raise ValueError("INVALID_MERIDIEM")
+        if not 1 <= actual["hour"] <= 12:
+            raise ValueError("INVALID_HOUR")
+        try:
+            date.fromisoformat(actual["due_date"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("INVALID_DUE_DATE") from exc
+    if proposal.tool_name == "request_clarification":
+        if not actual["question"].strip() or not actual["missing_fields"]:
+            raise ValueError("INVALID_CLARIFICATION_REQUEST")
     if proposal.tool_name == "revise_draft":
         allowed = {"title", "body", "due_date", "hour", "meridiem", "list_name", "items"}
         if not actual["patch"] or not set(actual["patch"]).issubset(allowed):
             raise ValueError("INVALID_DRAFT_PATCH")
+        if "title" in actual["patch"] and (not isinstance(actual["patch"]["title"], str) or not actual["patch"]["title"].strip()):
+            raise ValueError("INVALID_DRAFT_PATCH")
+        if "body" in actual["patch"] and (not isinstance(actual["patch"]["body"], str) or not actual["patch"]["body"].strip()):
+            raise ValueError("INVALID_DRAFT_PATCH")
         if "meridiem" in actual["patch"] and actual["patch"]["meridiem"] not in {"AM", "PM"}:
             raise ValueError("INVALID_MERIDIEM")
+        if "hour" in actual["patch"] and (isinstance(actual["patch"]["hour"], bool) or not isinstance(actual["patch"]["hour"], int) or not 1 <= actual["patch"]["hour"] <= 12):
+            raise ValueError("INVALID_HOUR")
+        if "due_date" in actual["patch"]:
+            try:
+                date.fromisoformat(actual["patch"]["due_date"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("INVALID_DUE_DATE") from exc
+        if "items" in actual["patch"] and (not isinstance(actual["patch"]["items"], list) or not actual["patch"]["items"] or not all(isinstance(item, str) and item.strip() for item in actual["patch"]["items"])):
+            raise ValueError("INVALID_LIST_ITEMS")
 
 
 def apply_to_sandbox(state: dict[str, Any], proposal: ToolProposal) -> tuple[dict[str, Any], str]:
@@ -315,6 +351,12 @@ class Engine:
         for role, binding in recipe.bindings.items():
             if binding.role.value != role:
                 raise ValueError(f"ROLE_BINDING_MISMATCH:{role}")
+            if binding.stage_state.value == "BLOCKED":
+                raise ValueError(f"BLOCKED_BINDING:{role}:{binding.unavailable_reason or 'UNKNOWN'}")
+            if binding.stage_state.value == "FAILED":
+                raise ValueError(f"FAILED_BINDING:{role}:{binding.unavailable_reason or 'UNKNOWN'}")
+            if binding.stage_state.value == "BYPASSED":
+                raise ValueError(f"BYPASSED_BINDING_MUST_NOT_BE_IN_GRAPH:{role}")
             if not binding.available:
                 raise ValueError(f"UNAVAILABLE_BINDING:{role}:{binding.unavailable_reason or 'UNKNOWN'}")
             if binding.execution_mode.value == "DEMO_RULES" and binding.provider != "demo_rules":
@@ -376,7 +418,18 @@ class Engine:
 
     def _function_call(self, binding: Any, text: str, plan: SemanticPlan | None, reference_timestamp: str, source_revision: int) -> ToolProposal:
         if binding.execution_mode.value == "DEMO_RULES":
-            return self.demo.function_call(text, plan, source_revision) if plan else self.demo.direct_function_call(text, reference_timestamp, source_revision)
+            proposal = self.demo.function_call(text, plan, source_revision) if plan else self.demo.direct_function_call(text, reference_timestamp, source_revision)
+            proposal.missing_fields = list(plan.missing_fields) if plan else []
+            proposal.provenance = {
+                "evidence_type": "DEMO_RULES",
+                "provider": binding.provider,
+                "model_id": binding.model_id,
+                "revision_or_digest": binding.revision_or_digest,
+                "source_revision": source_revision,
+                "prompt_version": binding.prompt_version,
+                "schema_version": binding.schema_version,
+            }
+            return proposal
         adapter = self.ollama_adapter if binding.provider == "ollama_local" else self.local_text_adapter if binding.provider == "llama_cpp_local" else None
         if not adapter:
             raise ValueError("UNAVAILABLE_LOCAL_MODEL: local adapter was not configured")
@@ -387,7 +440,7 @@ class Engine:
             tools=[{"type": "function", "function": {"name": name, "description": "Local sandbox operation", "parameters": {"type": "object"}}} for name in TOOL_SCHEMAS],
         )
         try:
-            if binding.tool_mode == "NATIVE" and raw.get("tool_calls"):
+            if binding.tool_mode in {"NATIVE", "NATIVE_TOOL_CALL"} and raw.get("tool_calls"):
                 call = raw["tool_calls"][0].get("function", raw["tool_calls"][0])
                 payload = {"status": "READY", "tool_name": call["name"], "arguments": json.loads(call.get("arguments", "{}"))}
             else:
@@ -396,7 +449,19 @@ class Engine:
             raise ValueError("INVALID_OUTPUT: invalid local tool proposal") from exc
         payload.update({
             "id": str(uuid.uuid4()), "source_revision": source_revision, "supporting_spans": [span_for(text)],
-            "tool_mode": binding.tool_mode, "evidence_type": "REAL_LOCAL_MODEL",
+            "missing_fields": payload.get("missing_fields", []),
+            "tool_mode": "NATIVE_TOOL_CALL" if binding.tool_mode in {"NATIVE", "NATIVE_TOOL_CALL"} else "STRUCTURED_TOOL_EMULATION" if binding.tool_mode in {"JSON_EMULATION", "STRUCTURED_TOOL_EMULATION"} else binding.tool_mode,
+            "evidence_type": "REAL_LOCAL_MODEL",
+            "provenance": {
+                "evidence_type": "REAL_LOCAL_MODEL",
+                "provider": binding.provider,
+                "model_id": binding.model_id,
+                "revision_or_digest": binding.revision_or_digest,
+                "source_revision": source_revision,
+                "prompt_version": binding.prompt_version,
+                "schema_version": binding.schema_version,
+                "runtime_metrics": raw.get("runtime_metrics"),
+            },
         })
         if raw.get("runtime_metrics"):
             self._runtime_metrics.append({"role": binding.role.value, **raw["runtime_metrics"]})
@@ -409,6 +474,9 @@ class Engine:
         calls: dict[str, int] = {}
         graph = list(recipe.graph)
         graph_set = set(graph)
+        stage_states: dict[str, str] = {stage: StageExecutionState.BYPASSED.value for stage in PIPELINE_STAGES}
+        for stage in graph:
+            stage_states[stage] = StageExecutionState.READY.value
         execution_evidence = sorted({binding.execution_mode.value for binding in recipe.bindings.values()})
         outputs: dict[str, Any] = {
             "recipe_id": recipe.id,
@@ -427,6 +495,7 @@ class Engine:
             "route": {
                 "graph": graph,
                 "bypassed_stages": [stage for stage in ("vad", "turn_detection", "diarization", "transcribe", "summarize", "actionize", "function_call", "verify", "synthesize") if stage not in graph_set],
+                "stage_states": stage_states,
                 "stage_evidence": [],
             },
         }
@@ -441,12 +510,16 @@ class Engine:
                 "revision_or_digest": binding.revision_or_digest,
                 "execution_mode": binding.execution_mode.value,
                 "capability_provenance": binding.capability_provenance.value,
+                "binding_stage_state": binding.stage_state.value,
+                "artifact_hashes": list(binding.artifact_hashes),
+                "source_revision": source_revision,
             })
         if "summarize" in graph_set:
             started = time.perf_counter()
             summary = self._summarize(recipe.bindings["summarize"], text)
             stage_durations["summarize"] = (time.perf_counter() - started) * 1000
             calls["summarize"] = 1
+            stage_states["summarize"] = StageExecutionState.READY.value
             outputs["summary"] = summary.model_dump(mode="json")
         else:
             outputs["summary"] = None
@@ -456,6 +529,7 @@ class Engine:
             plan = self._actionize(recipe.bindings["actionize"], text, reference_timestamp)
             stage_durations["actionize"] = (time.perf_counter() - started) * 1000
             calls["actionize"] = 1
+            stage_states["actionize"] = StageExecutionState.READY.value
             outputs["semantic_plan"] = plan.model_dump(mode="json")
         elif "function_call" in graph_set:
             outputs["semantic_plan"] = None
@@ -464,6 +538,7 @@ class Engine:
             proposal = self._function_call(recipe.bindings["function_call"], text, plan, reference_timestamp, source_revision)
             stage_durations["function_call"] = (time.perf_counter() - started) * 1000
             calls["function_call"] = 1
+            stage_states["function_call"] = StageExecutionState.READY.value
             validate_tool_proposal(proposal)
             outputs["proposal"] = proposal.model_dump(mode="json")
         else:
@@ -478,6 +553,8 @@ class Engine:
                 evidence["state"] = "INPUT_PROVIDED"
             else:
                 evidence["state"] = "UNIMPLEMENTED"
+            evidence["execution_state"] = stage_states.get(stage, StageExecutionState.FAILED.value)
+        outputs["route"]["stage_states"] = stage_states
         outputs["stage_durations_ms"] = stage_durations
         outputs["actual_invocation_counts"] = calls
         outputs["resource_measurements"] = self._runtime_metrics

@@ -1,5 +1,5 @@
 (() => {
-  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, locale: "ar", recordingId: null, recorder: null, chunks: [], stageCapabilities: [], scenarios: [] };
+  const state = { catalog: [], recipes: [], currentRecord: null, planned: null, tournamentId: null, locale: "ar", recordingId: null, recorder: null, chunks: [], pendingAudio: null, stageCapabilities: [], scenarios: [] };
   const $ = (id) => document.getElementById(id);
   const roles = { transcribe: "bindingTranscribe", summarize: "bindingSummarize", actionize: "bindingActionize", function_call: "bindingFunction" };
   const UI_COPY = {
@@ -187,6 +187,18 @@
       if (old && [...select.options].some((option) => option.value === old)) select.value = old;
       select.disabled = !matches.some((binding) => binding.available);
     });
+    const sttMatches = state.catalog.filter((binding) => binding.role === "transcribe" && ["transformers_whisper_local", "audar_mtmd_local", "faster_whisper_local"].includes(binding.provider));
+    const choices = $("sttBindingChoices");
+    if (choices) {
+      choices.replaceChildren(document.createTextNode(label("مرشحو التفريغ المحددون:", "Selected transcription candidates:")));
+      sttMatches.forEach((binding) => {
+        const wrapper = document.createElement("label"); wrapper.className = "check";
+        const input = document.createElement("input"); input.type = "checkbox"; input.dataset.sttBinding = binding.id; input.checked = binding.available; input.disabled = !binding.available;
+        wrapper.append(input, document.createTextNode(` ${binding.model_id} · ${binding.generation?.precision || "—"}`)); choices.append(wrapper);
+      });
+    }
+    const manual = $("sttManualBinding");
+    if (manual) { manual.replaceChildren(new Option("—", "")); sttMatches.forEach((binding) => { const option = new Option(`${binding.model_id} · ${binding.generation?.precision || "—"}`, binding.id); option.disabled = !binding.available; manual.append(option); }); }
   }
 
   function populateRecipes() {
@@ -222,7 +234,9 @@
   async function loadInitial() {
     const [catalog, recipes, sandbox] = await Promise.all([api("/api/catalog"), api("/api/recipes"), api("/api/sandbox")]);
     state.catalog = catalog.bindings; state.stageCapabilities = catalog.stage_capabilities?.stages || []; state.recipes = recipes;
+    state.recordingId = window.localStorage.getItem("saudi-sta-recording-id") || null;
     populateBindings(); populateRecipes(); renderSandbox(sandbox);
+    if (state.recordingId) { const seedState = $("seedRecordingState"); if (seedState) seedState.textContent = `${label("تسجيل محدد", "Selected recording")} ${state.recordingId.slice(0, 8)}`; }
     const hasLocal = state.catalog.some((binding) => binding.execution_mode === "LOCAL" && binding.available);
     setStatus($("runtimeStatus"), hasLocal ? "LOCAL_MODEL_AVAILABLE" : "LOCAL_MODEL_BLOCKED", hasLocal ? "green" : "amber");
   }
@@ -358,7 +372,11 @@
     const form = new FormData(); form.append("file", file); if (duration != null) form.append("duration_seconds", String(duration));
     const result = await api("/api/recordings", { method: "POST", body: form });
     state.recordingId = result.recording_id;
+    window.localStorage.setItem("saudi-sta-recording-id", result.recording_id);
+    state.pendingAudio = null;
     $("audioState").textContent = `${label("محلي", "Local")} · ${label("جاهز للتفريغ", "Ready for transcription")}`;
+    $("audioIdentity").textContent = `${label("هوية الصوت", "Audio identity")}: ${result.audio_sha256 || "—"} · ${result.duration_seconds.toFixed(1)}s`;
+    $("saveRecordingButton").disabled = true;
     const seedState = $("seedRecordingState"); if (seedState) seedState.textContent = `${label("تسجيل", "Recording")} ${result.recording_id.slice(0, 8)} · ${result.duration_seconds.toFixed(1)} ${label("ثانية", "s")}`;
     toast(label("تم حفظ التسجيل محلياً؛ لا يوجد إرسال إلى خدمة تفريغ." , "Recording stored locally; no transcription service was contacted."));
   }
@@ -376,8 +394,11 @@
   async function handleFile(file) {
     if (!file) return;
     const duration = await mediaDuration(file);
+    state.pendingAudio = { file, duration };
     $("audioPreview").src = URL.createObjectURL(file); $("audioPreview").hidden = false;
-    await uploadAudio(file, duration);
+    $("saveRecordingButton").disabled = false;
+    $("replayButton").disabled = false;
+    $("audioState").textContent = label("جاهز للحفظ المحلي", "Ready to save locally");
   }
 
   async function toggleRecord() {
@@ -387,13 +408,38 @@
       const recorder = new MediaRecorder(stream); state.recorder = recorder; state.chunks = []; const started = performance.now();
       recorder.ondataavailable = (event) => { if (event.data.size) state.chunks.push(event.data); };
       recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop()); $("recordButton").textContent = label("تسجيل", "Record");
+        stream.getTracks().forEach((track) => track.stop()); state.recorder = null; $("recordButton").textContent = label("تسجيل", "Record"); $("stopRecordingButton").disabled = true;
         const blob = new Blob(state.chunks, { type: recorder.mimeType || "audio/webm" }); const file = new File([blob], "recording.webm", { type: blob.type || "audio/webm" });
         $("audioPreview").src = URL.createObjectURL(blob); $("audioPreview").hidden = false;
-        try { await uploadAudio(file, (performance.now() - started) / 1000); } catch (error) { toast(error.message); }
+        state.pendingAudio = { file, duration: (performance.now() - started) / 1000 };
+        $("saveRecordingButton").disabled = false; $("replayButton").disabled = false;
+        $("audioState").textContent = label("تم الإيقاف؛ احفظ التسجيل صراحةً", "Stopped; save the recording explicitly");
       };
-      recorder.start(); $("recordButton").textContent = label("إيقاف التسجيل", "Stop recording"); $("audioState").textContent = label("جارٍ التسجيل محلياً…", "Recording locally…");
+      recorder.start(); $("recordButton").textContent = label("إيقاف التسجيل", "Stop recording"); $("stopRecordingButton").disabled = false; $("audioState").textContent = label("جارٍ التسجيل محلياً…", "Recording locally…");
     } catch (error) { toast(label("تعذر الوصول إلى الميكروفون: ", "Microphone unavailable: ") + error.message); }
+  }
+
+  function stopRecording() {
+    if (state.recorder && state.recorder.state === "recording") state.recorder.stop();
+  }
+
+  function replayRecording() {
+    const preview = $("audioPreview");
+    if (!preview.hidden) { preview.currentTime = 0; preview.play().catch(() => {}); }
+  }
+
+  function rerecord() {
+    if (state.recorder && state.recorder.state === "recording") state.recorder.stop();
+    state.pendingAudio = null; state.recordingId = null;
+    window.localStorage.removeItem("saudi-sta-recording-id");
+    $("audioFile").value = ""; $("audioPreview").removeAttribute("src"); $("audioPreview").hidden = true;
+    $("audioIdentity").textContent = "—"; $("saveRecordingButton").disabled = true; $("replayButton").disabled = true;
+    $("audioState").textContent = label("لا يوجد تسجيل", "No recording");
+  }
+
+  async function saveRecording() {
+    if (!state.pendingAudio) return;
+    await uploadAudio(state.pendingAudio.file, state.pendingAudio.duration);
   }
 
   function recordElement(record) {
@@ -457,19 +503,26 @@
        ["WER", "—", ...report.candidates.map((candidate) => candidate.wer == null ? "—" : candidate.wer.toFixed(3))],
        ["CER", "—", ...report.candidates.map((candidate) => candidate.cer == null ? "—" : candidate.cer.toFixed(3))],
        [label("الزمن", "Latency"), "—", ...report.candidates.map((candidate) => candidate.latency_ms == null ? "—" : `${candidate.latency_ms.toFixed(1)} ${label("مللي ثانية", "ms")}`)],
+       [label("تفصيل الزمن", "Latency breakdown"), "—", ...report.candidates.map((candidate) => `${candidate.model_load_ms == null ? "—" : candidate.model_load_ms.toFixed(1)} load · ${candidate.inference_latency_ms == null ? "—" : candidate.inference_latency_ms.toFixed(1)} infer · ${candidate.total_latency_ms == null ? "—" : candidate.total_latency_ms.toFixed(1)} total · ${candidate.cold_start == null ? "—" : (candidate.cold_start ? "cold" : "warm")}`)],
+       [label("هوية النموذج", "Model identity"), "—", ...report.candidates.map((candidate) => `${candidate.model_hash || "—"} · ${(candidate.artifact_hashes || []).join(", ") || "—"}`)],
        [label("المصدر", "Provenance"), "—", ...report.candidates.map((candidate) => `${candidate.provider} · ${candidate.revision_or_digest || "—"} · ${candidate.runtime || "—"}`)],
        [label("أخطاء الكلام", "Speech errors"), label("موسومة بشريًا", "human-labelled"), ...report.candidates.map((candidate) => (candidate.speech_errors || []).join(", ") || "—")],
+       [label("الأخطاء الحرجة", "Critical errors"), "—", ...report.candidates.map((candidate) => pretty(candidate.critical_errors || []))],
         [label("الحالة", "Status"), label("مرجعية عند إدخالها فقط", "authoritative only when entered"), ...report.candidates.map((candidate) => copy(candidate.status, "state"))],
     ];
     const body = document.createElement("tbody");
     rows.forEach((values) => { const row = document.createElement("tr"); values.forEach((value) => { const cell = document.createElement("td"); cell.textContent = String(value); row.append(cell); }); body.append(row); });
     table.append(body); target.append(table);
+    const identity = document.createElement("p"); identity.className = "small mono"; identity.textContent = `${label("هوية الإدخال", "Input identity")}: ${report.audio_identity?.sha256 || "—"} · ${report.audio_identity?.size_bytes || "—"} bytes`; target.append(identity);
     const aggregate = document.createElement("pre"); aggregate.className = "small mono"; aggregate.textContent = pretty({ aggregates: report.aggregates, disagreement: report.disagreement }); target.append(aggregate);
   }
 
-  async function compareRecording() {
+  async function startSttComparison() {
     if (!state.recordingId) throw new Error("Record or upload an audio clip in Workbench first.");
-    renderSttCompare(await api(`/api/recordings/${state.recordingId}/stt-compare`));
+    const bindingIds = [...document.querySelectorAll("[data-stt-binding]:checked")].map((input) => input.dataset.sttBinding);
+    const mode = $("sttMode")?.value || "Performance";
+    const manualBindingId = $("sttManualBinding")?.value || null;
+    renderSttCompare(await api("/api/stt-tournaments/start", { method: "POST", body: JSON.stringify({ recording_id: state.recordingId, mode, binding_ids: bindingIds, manual_binding_id: manualBindingId }) }));
   }
 
   async function refreshModels() {
@@ -520,9 +573,17 @@
     $("cancelTournament").onclick = () => state.tournamentId && api(`/api/tournaments/${state.tournamentId}/cancel`, { method: "POST", body: "{}" }).then(pollTournament).catch((error) => toast(error.message));
     $("audioFile").onchange = (event) => handleFile(event.target.files?.[0]).catch((error) => toast(error.message));
     $("recordButton").onclick = () => toggleRecord();
-    document.querySelectorAll("[data-seed-prompt]").forEach((button) => button.onclick = () => { $("seedPrompt").textContent = button.dataset.seedPrompt; $("seedTranscript").value = button.dataset.seedPrompt; });
+    $("stopRecordingButton").onclick = () => stopRecording();
+    $("replayButton").onclick = () => replayRecording();
+    $("rerecordButton").onclick = () => rerecord();
+    $("saveRecordingButton").onclick = () => saveRecording().catch((error) => toast(error.message));
+    document.querySelectorAll("[data-seed-prompt]").forEach((button) => button.onclick = () => { $("seedPrompt").textContent = `${button.dataset.seedPrompt} · ${label("مثال اختياري؛ تحدث بطبيعتك ولا يلزم تكراره.", "Optional example; speak naturally and do not repeat it exactly.")}`; $("seedTranscript").value = ""; });
     $("saveSeedCase").onclick = () => saveSeedCase().catch((error) => toast(error.message));
-    $("compareRecording").onclick = () => compareRecording().catch((error) => toast(error.message));
+    // Delegate this control so it remains reliable when the seed panel is
+    // re-rendered or revealed after initial page load.
+    document.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("#compareRecording")) startSttComparison().catch((error) => toast(error.message));
+    });
     $("refreshSeedScenarios").onclick = () => refreshSeedScenarios().catch((error) => toast(error.message));
     $("refreshSeedCases").onclick = () => refreshSeedCases().catch((error) => toast(error.message));
     $("refreshRecords").onclick = () => refreshRecords().catch((error) => toast(error.message));

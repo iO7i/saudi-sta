@@ -19,7 +19,7 @@ from .capability_certification import capability_bindings, stage_capability_repo
 from .download_status import read_worker_status
 from .policy import PolicyViolation, allowed_browser_host, allowed_origin
 from .providers import AudarMtmdAdapter, FasterWhisperAdapter, LlamaCppAdapter, LocalArtifactRegistry, LocalModelUnavailable, OllamaAdapter, TransformersWhisperAdapter, provider_matrix
-from .qwen_certification import qwen_certification_plan
+from .qwen_certification import qwen_certification_plan, qwen_route_experiment_plan, run_qwen_certification
 from .model_registry import configured_roots, scan_models
 from .schemas import ApplyRequest, Recipe, ReviewUpdate, Role, RoleBinding, RunRequest, RunStatus, SeedHumanCaseCreate, STTTournamentStart, ToolProposal, TournamentStart, TranscriptEdit
 from .store import Store
@@ -190,6 +190,41 @@ def qwen_certification() -> dict[str, Any]:
     return qwen_certification_plan(binding)
 
 
+@app.get("/api/qwen-certification/route-plan")
+def qwen_route_plan() -> dict[str, Any]:
+    return qwen_route_experiment_plan()
+
+
+@app.post("/api/qwen-certification/run")
+def qwen_certification_run() -> dict[str, Any]:
+    bindings = [item for item in current_bindings() if item.provider == "llama_cpp_local" and item.model_id in {"QWEN38_27B_Q6_K_L", "QWEN3_8_27B_Q6_K_L"}]
+    role_bindings = {item.role.value: item for item in bindings}
+    if set(role_bindings) != {"summarize", "actionize", "function_call", "verify"}:
+        return qwen_certification_plan(None)
+    load_evidence: dict[str, Any]
+    try:
+        load_evidence = local_text.load(role_bindings["function_call"])
+        status = local_text.status(role_bindings["function_call"])
+
+        def invoke(role: str, case: dict[str, Any]) -> dict[str, Any]:
+            binding = role_bindings[role]
+            return local_text.invoke(
+                binding,
+                [{"role": "system", "content": "You are a local Saudi STA certification probe. Return only the requested structured result."},
+                 {"role": "user", "content": case["text"]}],
+                json_schema={"type": "object", "additionalProperties": True},
+                timeout_seconds=float(binding.generation.get("timeout_seconds", 120)),
+                context={"certification_case": case["id"], "role": role},
+            )
+        report = run_qwen_certification(role_bindings["function_call"], invoke)
+        report["load_evidence"] = load_evidence
+        report["artifact_identity"] = status.get("artifacts", [])
+        return report
+    except LocalModelUnavailable as exc:
+        return {"status": "ROLE_PROBE_FAILED", "evidence_type": "REAL_LOCAL_MODEL", "failed_roles": list(role_bindings),
+                "load_evidence": load_evidence if "load_evidence" in locals() else None, "error": str(exc)}
+
+
 @app.get("/api/recipes")
 def list_recipes() -> list[dict[str, Any]]:
     ensure_local_default_recipes()
@@ -306,10 +341,11 @@ def apply_proposal(record_id: str, body: ApplyRequest) -> dict[str, Any]:
     if proposal.source_revision != record["revision"]:
         raise HTTPException(409, "STALE_PROPOSAL")
     try:
-        state, status = apply_to_sandbox(store.get_sandbox(), proposal)
+        # The store takes the SQLite write lock and re-checks the proposal id
+        # so concurrent/repeated Apply cannot duplicate a local effect.
+        state, status = store.apply_sandbox_once(proposal, apply_to_sandbox)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    store.save_sandbox(state)
     return {"status": status, "sandbox": state}
 
 
@@ -346,8 +382,12 @@ async def upload_recording(file: UploadFile = File(...), duration_seconds: float
     if effective_duration <= 0 or effective_duration > MAX_AUDIO_SECONDS:
         raise HTTPException(413, "AUDIO_DURATION_LIMIT_EXCEEDED: maximum is 300 seconds")
     recording_id, filename = store.save_audio(payload, SUPPORTED_AUDIO[mime_type], mime_type, effective_duration)
+    recording = store.recording(recording_id) or {}
     speech_available = speech.status()["available"] or any(binding.available for binding in audar_speech.discover())
-    return {"recording_id": recording_id, "filename": filename, "duration_seconds": effective_duration, "duration_source": "WAV_SERVER_VERIFIED" if verified_duration is not None else "RECORDER_REPORTED", "asr_status": "LOCAL_SPEECH_AVAILABLE" if speech_available else "UNAVAILABLE_LOCAL_MODEL"}
+    return {"recording_id": recording_id, "filename": filename, "duration_seconds": effective_duration,
+            "audio_sha256": recording.get("audio_sha256"),
+            "duration_source": "WAV_SERVER_VERIFIED" if verified_duration is not None else "RECORDER_REPORTED",
+            "asr_status": "LOCAL_SPEECH_AVAILABLE" if speech_available else "UNAVAILABLE_LOCAL_MODEL"}
 
 
 @app.get("/api/recordings/{recording_id}")
@@ -396,6 +436,7 @@ def add_seed_human_eval(body: SeedHumanCaseCreate) -> dict[str, Any]:
         if "UNIQUE" in str(exc).upper():
             raise HTTPException(409, "RECORDING_ALREADY_HAS_SEED_HUMAN_LABEL") from exc
         raise
+    store.set_review_state(body.recording_id, review_state)
     return {"status": "SAVED", "case": case}
 
 

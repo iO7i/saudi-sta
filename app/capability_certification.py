@@ -154,6 +154,6 @@ def capability_bindings(model_root: Path = MODEL_ROOT, manifest_path: Path = DOW
             role=role_for_stage[stage], prompt_version="stage-v1", schema_version="sta-v2",
             execution_mode=ExecutionMode.LOCAL, capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if available else CapabilityProvenance.DISCOVERED,
             capabilities=[stage] if available else [], available=available, unavailable_reason=None if available else item.get("reason"), tool_mode="NONE",
+            artifact_hashes=[str(artifact.get("local_sha256") or artifact.get("sha256")) for artifact in item.get("artifacts", []) if artifact.get("local_sha256") or artifact.get("sha256")],
         ))
     return bindings
-

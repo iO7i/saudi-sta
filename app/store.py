@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import uuid
@@ -52,7 +53,7 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS recordings (
                   id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime_type TEXT NOT NULL, bytes INTEGER NOT NULL,
-                  duration_seconds REAL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                  duration_seconds REAL, audio_sha256 TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS seed_human_cases (
                   id TEXT PRIMARY KEY, recording_id TEXT NOT NULL UNIQUE, reviewed_transcript TEXT NOT NULL,
@@ -67,6 +68,9 @@ class Store:
             seed_columns = {row[1] for row in conn.execute("PRAGMA table_info(seed_human_cases)").fetchall()}
             if "review_state" not in seed_columns:
                 conn.execute("ALTER TABLE seed_human_cases ADD COLUMN review_state TEXT NOT NULL DEFAULT 'HUMAN_TRANSCRIPT_REVIEWED'")
+            recording_columns = {row[1] for row in conn.execute("PRAGMA table_info(recordings)").fetchall()}
+            if "audio_sha256" not in recording_columns:
+                conn.execute("ALTER TABLE recordings ADD COLUMN audio_sha256 TEXT")
             conn.execute(
                 "INSERT OR IGNORE INTO sandbox(id, body) VALUES(1, ?)",
                 (json.dumps({"notes": [], "reminders": [], "lists": {}, "applied_proposal_ids": []}),),
@@ -170,6 +174,13 @@ class Store:
             )
         return self.get_record(record_id) if result.rowcount else None
 
+    def set_review_state(self, record_id: str, review_state: str) -> dict[str, Any] | None:
+        if review_state not in {"RECORDED", "MODEL_TRANSCRIBED", "HUMAN_TRANSCRIPT_REVIEWED", "SEMANTIC_REFERENCE_REVIEWED"}:
+            raise ValueError("INVALID_REVIEW_STATE")
+        with self._connect() as conn:
+            result = conn.execute("UPDATE records SET review_state=? WHERE id=?", (review_state, record_id))
+        return self.get_record(record_id) if result.rowcount else None
+
     def delete_record(self, record_id: str) -> bool:
         record = self.get_record(record_id)
         if not record:
@@ -194,6 +205,21 @@ class Store:
         with self._connect() as conn:
             conn.execute("UPDATE sandbox SET body=? WHERE id=1", (self._dump(state),))
 
+    def apply_sandbox_once(self, proposal: Any, applier: Any) -> tuple[dict[str, Any], str]:
+        """Apply a proposal under a write lock so repeated Apply is idempotent."""
+        proposal_id = str(getattr(proposal, "id", ""))
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT body FROM sandbox WHERE id=1").fetchone()
+            state = json.loads(row["body"]) if row else {"notes": [], "reminders": [], "lists": {}, "applied_proposal_ids": []}
+            if proposal_id in state.setdefault("applied_proposal_ids", []):
+                conn.commit()
+                return state, "ALREADY_APPLIED"
+            updated, status = applier(state, proposal)
+            conn.execute("UPDATE sandbox SET body=? WHERE id=1", (self._dump(updated),))
+            conn.commit()
+            return updated, status
+
     def save_tournament(self, report: dict[str, Any]) -> None:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO tournaments(id, body) VALUES(?, ?)", (report["id"], self._dump(report)))
@@ -212,9 +238,10 @@ class Store:
             os.chmod(target, 0o600)
         except OSError:
             pass
+        audio_sha256 = hashlib.sha256(payload).hexdigest()
         with self._connect() as conn:
-            conn.execute("INSERT INTO recordings(id, filename, mime_type, bytes, duration_seconds) VALUES (?, ?, ?, ?, ?)",
-                         (recording_id, filename, mime_type, len(payload), duration_seconds))
+            conn.execute("INSERT INTO recordings(id, filename, mime_type, bytes, duration_seconds, audio_sha256) VALUES (?, ?, ?, ?, ?, ?)",
+                         (recording_id, filename, mime_type, len(payload), duration_seconds, audio_sha256))
         return recording_id, filename
 
     def audio_path(self, filename: str) -> Path | None:
