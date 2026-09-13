@@ -40,3 +40,4 @@ audit/machine-*.json
 audit/machine-*.md
 audit/slice02-machine-*.json
 audit/slice02-machine-*.md
+.playwright-cli/
