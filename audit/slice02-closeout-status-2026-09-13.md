@@ -2,10 +2,12 @@
 
 ## Status
 
-`SLICE_02_TECHNICAL_GREEN` is **not reached** in this checkpoint. The local
-route infrastructure is bounded and browser-visible, but the available user
-recordings did not produce a proposal for one of the intentionally safe local
-sandbox tools, so no real-model Apply/readback proof is claimed.
+The core real-route gate is now proven for Recording (15): real audio entered,
+real Audar STT ran, real Qwen3.8 generated a strict local action proposal, and
+the proposal was previewed, applied, read back, de-duplicated, and rejected
+after a transcript revision. Full `SLICE_02_TECHNICAL_GREEN` closeout still
+requires the remaining browser Apply journey and bounded Direct-vs-Staged plus
+route-tournament evidence to be captured explicitly.
 
 `SLICE_02_EMPIRICAL_STATUS: HUMAN_RECORDING_REQUIRED`
 
@@ -58,17 +60,22 @@ subprocess adapters now register interpreter-exit child-tree cleanup in
 addition to their normal cancellation/timeout kill path, preventing this
 harness-exit orphan case from being silently retained.
 
-## Exact next input needed
+Recording 15 supplied the first unambiguous supported action. Its complete
+`REAL_LOCAL_END_TO_END` trace is archived in
+`audit/slice02-real-route-attempts-2026-09-13.md`: Audar Q4 produced the exact
+list-request transcript, Qwen returned `add_list_items` with `المقاضي`, `البيض`,
+and `الحليب`, Apply returned `APPLIED`, the second identical Apply returned
+`ALREADY_APPLIED`, and the old proposal returned HTTP 409 after transcript
+revision 2. This proof used JSON emulation with strict deterministic
+validation; native grammar and native tool calling remain uncertified.
 
-Record one natural utterance that directly requests a supported local
-operation, for example:
+## Remaining closeout evidence
 
-`<REDACTED_PRIVATE_TRANSCRIPT>`
-
-Then review the verbatim transcript and expected list arguments in the Seed
-Saudi Speech Set UI. That recording is required before claiming real
-ToolProposal Apply/readback, duplicate-Apply idempotency, stale-rejection, or
-an empirical Saudi quality winner.
+The remaining empirical gap is human review: review/correct the verbatim
+transcripts and expected actions in the Seed Saudi Speech Set UI before claiming
+an empirical Saudi quality winner. The remaining technical evidence to capture
+is the full browser Apply journey and a bounded Direct-vs-Staged / complete
+route-tournament run; these are not inferred from the API trace.
 
 ## Safety and spend
 

@@ -116,3 +116,57 @@ variants: Q4 and Q8 returned `<REDACTED_PRIVATE_TRANSCRIPT>`, while Flash
 returned `<REDACTED_PRIVATE_TRANSCRIPT>`. The item words were preserved, but
 the shopping-list word was not. This disagreement is retained as an observed
 STT error; it is not normalized into `المقاضي` without a human reference.
+
+## Recordings 14–17 and first complete real Apply trace
+
+Four additional private recordings were inspected with the certified Audar
+variants. They remain outside Git and are not treated as human-reviewed gold:
+
+| File | Bytes | Duration (s) | SHA-256 | Observation |
+|---|---:|---:|---|---|
+| `Recording (14).m4a` | 196,729 | 7.7015 | `2dabfdfca4f12ccdea35add92e508057bcced6adcc2bd2131bf79a91c74e571c` | list request for eggs; all variants preserved the intent |
+| `Recording (15).m4a` | 224,128 | 8.7895 | `650f1a03da6ed23a0985e2c7b399dc813476d4dc914d947aa342362fa9eefebc` | unambiguous eggs-and-milk list request; used for Apply proof |
+| `Recording (16).m4a` | 199,908 | 7.8295 | `9dd36ddca74e943661a13f6671d33d6333e74f7e42f0734190beda0557a4a922` | list request; all variants preserved eggs, milk, and list context |
+| `Recording (17).m4a` | 189,543 | 7.4242 | `60cff5f6b61ba53e34e79e9b85483d40a8a8019b051eca3e24d21b04ebc40644` | list request; Q8/Flash had list-word transcription variants |
+
+Recording (15) was run end-to-end in a fresh local runtime data directory as
+recipe `real_audar_turbo_q4_local_bridge_qwen38_27b_q6_k_l_direct_v1`:
+
+`REAL AUDIO → Audar Turbo Q4 → Qwen3.8-27B Q6_K_L → JSON emulation → strict ToolProposal`
+
+The upload hash is `650f1a03da6ed23a0985e2c7b399dc813476d4dc914d947aa342362fa9eefebc`.
+The real STT transcript was exactly:
+
+`<REDACTED_PRIVATE_TRANSCRIPT>`
+
+Qwen ran locally with artifact hash
+`sha256:121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4`,
+llama.cpp build `b10909-a2878d30d`, prompt `qwen-json-v2`, schema validation,
+reasoning disabled, temperature zero, and a 160-token bound. It returned a
+strictly valid emulated tool proposal:
+
+```json
+{"status":"READY","tool_name":"add_list_items","arguments":{"list_name":"المقاضي","items":["البيض","الحليب"]}}
+```
+
+The route record is `c666a6b5-086c-4293-8ebc-3f5f5f551671`; the proposal ID is
+`a31f0cb4-6a01-4e56-9b0c-fcc741501a47`. The Qwen stage took 139,199.703 ms
+(139,177.189 ms model inference); the route record contains 8,238.770 ms for
+the Audar stage. Before Apply, sandbox state was empty. Applying once returned
+`APPLIED` and readback showed exactly:
+
+```json
+{"lists":{"المقاضي":["البيض","الحليب"]},"notes":[],"reminders":[],"applied_proposal_ids":["a31f0cb4-6a01-4e56-9b0c-fcc741501a47"]}
+```
+
+Applying the identical proposal again returned `ALREADY_APPLIED` and did not
+duplicate either item. Editing the transcript with `expected_revision: 1`
+advanced it to revision 2 and marked prior outputs stale. Re-applying the old
+proposal returned HTTP 409 `STALE_PROPOSAL: rerun after transcript edit`.
+The append-only Apply evidence records both attempts, before/after sandbox
+state, idempotency identity, and the stale revision boundary.
+
+This is the first `REAL_LOCAL_END_TO_END` route with a valid proposal,
+deterministic sandbox effect, duplicate-Apply protection, and stale-proposal
+rejection. It is technical evidence only; no human-reviewed Saudi reference
+has been assigned yet.
