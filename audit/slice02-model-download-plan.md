@@ -12,15 +12,15 @@ Status: reviewed before download on 2026-09-11. This is a machine-local, zero-sp
 
 ## Existing artifact audit
 
-`D:\\models\\whisper\\whisper-large-v3` was a partial copy of `openai/whisper-large-v3`. Its existing second shard's SHA-256 was verified against the canonical repository. The first shard was missing, so the model was not executable before this transfer.
+`${MODEL_ROOT}/whisper/whisper-large-v3` was a partial copy of `openai/whisper-large-v3`. Its existing second shard's SHA-256 was verified against the canonical repository. The first shard was missing, so the model was not executable before this transfer.
 
 ## Download plan
 
 | Purpose | Artifact | Pinned repository revision | License | Destination | Size |
 |---|---|---|---|---|---:|
-| Arabic STT baseline | `openai/whisper-large-v3` / `model.fp32-00001-of-00002.safetensors` | `06f233fe06e710322aca913c1bc4249a0d71fce1` | Apache-2.0 | `D:\\models\\whisper\\whisper-large-v3` | 4,993,448,880 B |
-| Quality-oriented local text/action | `bartowski/Qwen_Qwen3.5-4B-GGUF` / `Qwen_Qwen3.5-4B-Q4_K_M.gguf` | `4168f45a16a1290d65a4ec0fa312ae917a4c15d6` | Apache-2.0 | `D:\\saudi-sta-models\\qwen35-4b-q4` | 3,013,027,808 B |
-| Speed-oriented local text/action | `bartowski/Qwen_Qwen3.5-0.8B-GGUF` / `Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` | `f36b1ea49a332ede8fe5f389bbf5b3575ef71f48` | Apache-2.0 | `D:\\saudi-sta-models\\qwen35-0.8b-q4` | 579,615,840 B |
+| Arabic STT baseline | `openai/whisper-large-v3` / `model.fp32-00001-of-00002.safetensors` | `06f233fe06e710322aca913c1bc4249a0d71fce1` | Apache-2.0 | `${MODEL_ROOT}/whisper/whisper-large-v3` | 4,993,448,880 B |
+| Quality-oriented local text/action | `bartowski/Qwen_Qwen3.5-4B-GGUF` / `Qwen_Qwen3.5-4B-Q4_K_M.gguf` | `4168f45a16a1290d65a4ec0fa312ae917a4c15d6` | Apache-2.0 | `${MODEL_ROOT}/qwen35-4b-q4` | 3,013,027,808 B |
+| Speed-oriented local text/action | `bartowski/Qwen_Qwen3.5-0.8B-GGUF` / `Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` | `f36b1ea49a332ede8fe5f389bbf5b3575ef71f48` | Apache-2.0 | `${MODEL_ROOT}/qwen35-0.8b-q4` | 579,615,840 B |
 
 Total planned model transfer: **8,586,092,528 B (about 8.00 GiB)**.
 

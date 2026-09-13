@@ -21,8 +21,9 @@ made.
 - Apply again: `ALREADY_APPLIED`; no duplicate effect.
 - Transcript revision 2: old proposal rejected with
   `STALE_PROPOSAL: rerun after transcript edit`.
-- Browser: upload, real transcription, non-blocking Qwen progress, proposal
-  inspection, Apply/readback, idempotency, and stale rejection were exercised
+- Browser: upload, real transcription (private transcript redacted in this
+  public note), non-blocking Qwen progress, proposal inspection, Apply/readback,
+  idempotency, and stale rejection were exercised
   at loopback `http://127.0.0.1:8765/`.
 - Cancellation: live Qwen child PID `34076` was terminated after cancel; no
   llama-cli child remained and `/api/health` remained healthy.
@@ -81,7 +82,7 @@ made.
 - Direct/Staged experiment: `audit/slice02-direct-vs-staged-2026-09-13.md`
 - Cancellation and route tournament: `audit/slice02-runtime-safety-and-route-tournament-2026-09-13.md`
 - Full local JSON evidence remains outside Git at
-  `D:\saudi-sta-slice02-stt-recording15.json`,
-  `D:\saudi-sta-slice02-dev-comparison.json`,
-  `D:\saudi-sta-slice02-route-tournament.json`, and
-  `D:\saudi-sta-slice02-cancel-evidence.json`.
+  `${EVIDENCE_ROOT}/saudi-sta-slice02-stt-recording15.json`,
+  `${EVIDENCE_ROOT}/saudi-sta-slice02-dev-comparison.json`,
+  `${EVIDENCE_ROOT}/saudi-sta-slice02-route-tournament.json`, and
+  `${EVIDENCE_ROOT}/saudi-sta-slice02-cancel-evidence.json`.

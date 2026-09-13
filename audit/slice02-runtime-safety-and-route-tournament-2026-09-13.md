@@ -12,7 +12,7 @@ returned `status=ok`, `ZERO_SPEND_LOCAL`, and `remote_inference=blocked`.
 - Job: `0e888efc-1a3e-4670-881c-44778d995110`
 - Child PID before cancellation: `34076`
 - Child PIDs after terminal state: none
-- Evidence manifest: `D:\saudi-sta-slice02-cancel-evidence.json`
+- Evidence manifest: `${EVIDENCE_ROOT}/saudi-sta-slice02-cancel-evidence.json`
 - Configured route cap: 360 seconds
 - Unit regression coverage also proves immediate timeout publication,
   cooperative cancellation, child cleanup, and subsequent-job usability.
@@ -34,7 +34,7 @@ within this single authored development case, but this is not human Saudi
 quality evidence. The report explicitly says
 `AUTHORED_SMOKE_FIXTURE + route-specific execution evidence`; no human
 reference or STT quality winner is inferred. Full report:
-`D:\saudi-sta-slice02-route-tournament.json`.
+`${EVIDENCE_ROOT}/saudi-sta-slice02-route-tournament.json`.
 
 Together with the separate real audio route records and the same-audio STT
 stage tournament, this proves that complete local route candidates can enter

@@ -2,7 +2,7 @@
 
 ## Remote freshness
 
-- Scope: `<PRIVATE_WORKSPACE>`
+- Scope: private workspace path redacted from the public note
 - Fetch attempted with `git fetch --all --prune --tags`.
 - The checkout has no configured Git remote, so current upstream truth could not be proven. This remains `REMOTE_FRESHNESS_BLOCKER`.
 - Recovery commit: `6e59afb`.
@@ -17,7 +17,7 @@
 - Expected SHA-256: `86444dd50d63cad3875ef3aab679ebc842466511c49753f9869b8e4ad5395cba`
 - Invalid partial SHA-256: `e97c329fde193975344e85e5fa1500870a6beb741921d1f549ea19331312eba2`
 - Invalid partial bytes: `482617608`
-- Quarantined path: `D:\models\audar\Audar-Diarization-V1\model.safetensors.part.invalid-20260911-221246`
+- Quarantined path: `${MODEL_ROOT}/audar/Audar-Diarization-V1/model.safetensors.part.invalid-20260911-221246`
 - Fresh transfer completed and was atomically promoted to `INTEGRITY_VERIFIED`.
 
 ## Queue semantics and supervision

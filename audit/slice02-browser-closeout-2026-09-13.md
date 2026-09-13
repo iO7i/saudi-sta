@@ -29,7 +29,7 @@
    `status: ok`, `ZERO_SPEND_LOCAL`, and `remote_inference: blocked` while the
    `llama-cli` child was active.
 5. The Workbench rendered `REAL_LOCAL_END_TO_END`, the real Audar transcript
-   `<REDACTED_PRIVATE_TRANSCRIPT>`, and the strict
+   (redacted in this public note), and the strict
    proposal:
 
    ```json

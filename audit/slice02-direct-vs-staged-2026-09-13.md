@@ -4,13 +4,13 @@ This is a bounded development experiment on three real local recordings. It is
 not a human-reviewed Saudi benchmark. The source recordings are private and
 remain outside Git. Full job/route records are in the local runtime database;
 the compact experiment manifest is retained outside Git at
-`D:\saudi-sta-slice02-dev-comparison.json`.
+`${EVIDENCE_ROOT}/saudi-sta-slice02-dev-comparison.json`.
 
 ## Configuration
 
 - Direct: `audio → AUDAR_TURBO_Q4_LOCAL_BRIDGE → QWEN3.8 function_call`.
 - Staged: `audio → AUDAR_TURBO_Q4_LOCAL_BRIDGE → QWEN3.8 actionize → QWEN3.8 function_call`.
-- Same pinned Qwen artifact for both: `D:\Qwen3.8-27B-UD-Q6_K_L.gguf`,
+- Same pinned Qwen artifact for both: `${MODEL_ROOT}/Qwen3.8-27B-UD-Q6_K_L.gguf`,
   SHA-256 `121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4`.
 - Runtime: llama.cpp `b10909-a2878d30d`, CPU/offline, reasoning off,
   temperature 0, JSON emulation with strict Pydantic validation.

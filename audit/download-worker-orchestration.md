@@ -4,7 +4,7 @@ The model downloader is intentionally separate from application execution.
 
 - Worker code: `tools/download_worker.py`
 - Supervisor: `tools/download_supervisor.py`
-- External state: `D:\models\_downloads\manifest.json`, `worker-status.json`, `download-log.jsonl`, and `worker.lock`
+- External state: `${MODEL_ROOT}/_downloads/manifest.json`, `worker-status.json`, `download-log.jsonl`, and `worker.lock`
 - Model artifacts never enter Git.
 - The worker invokes only pinned public file URLs with exact local paths, resumable `.part` files, byte-count checks, and SHA-256 checks.
 - The worker does not import the application, load models, run inference, activate routes, or install runtimes.

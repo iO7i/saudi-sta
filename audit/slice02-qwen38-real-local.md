@@ -9,7 +9,7 @@ probe, not a broad benchmark and not a claim about the Qwen family in general.
 
 - Source: `unsloth/Qwen3.8-27B-GGUF`
 - Revision: `4ca720788d1e01f1bff70c033e0d0028fd02e502`
-- File: `D:\\Qwen3.8-27B-UD-Q6_K_L.gguf`
+- File: `${MODEL_ROOT}/Qwen3.8-27B-UD-Q6_K_L.gguf`
 - Bytes: `24,193,919,904`
 - SHA-256: `121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4`
 - Precision/quantization: `Q6_K_L`
@@ -20,7 +20,7 @@ probe, not a broad benchmark and not a claim about the Qwen family in general.
 ## Runtime and hardware
 
 - Runtime: pinned `llama.cpp` CLI `b10909-a2878d30d`
-- Executable: `D:\\models\\runtimes\\llama.cpp\\b10909\\llama-cli.exe`
+- Executable: `${RUNTIME_ROOT}/llama.cpp/b10909/llama-cli.exe`
 - Execution: CPU, 8 threads, loopback/offline environment flags, temperature 0,
   reasoning off, no remote endpoint
 - Machine: Windows 11 Pro, AMD Ryzen AI 9 365 / Radeon 880M, 31.1 GB RAM

@@ -17,9 +17,9 @@ ranking.
 
 | Candidate | Result | Transcript | Complete latency |
 |---|---|---|---:|
-| `AUDAR_TURBO_Q4_LOCAL_BRIDGE` | READY | `<REDACTED_PRIVATE_TRANSCRIPT>` | 21,092.27 ms |
-| `AUDAR_TURBO_Q8_LOCAL` | READY | `<REDACTED_PRIVATE_TRANSCRIPT>؟` | 15,471.78 ms |
-| `AUDAR_FLASH_Q8_LOCAL` | READY | `<REDACTED_PRIVATE_TRANSCRIPT>` | 9,037.09 ms |
+| `AUDAR_TURBO_Q4_LOCAL_BRIDGE` | READY | private transcript redacted | 21,092.27 ms |
+| `AUDAR_TURBO_Q8_LOCAL` | READY | private transcript redacted | 15,471.78 ms |
+| `AUDAR_FLASH_Q8_LOCAL` | READY | private transcript redacted | 9,037.09 ms |
 | `WHISPER_LARGE_V3` | FAILED | unavailable: transformers and torch runtime required | 0.11 ms |
 
 All three Audar outputs preserve the same words. Punctuation differences remain
@@ -34,4 +34,4 @@ inference cost is 0 for every ready candidate.
 
 The full JSON report, including artifact hashes, runtime diagnostics, raw
 provider output, and failure status, is retained outside Git at
-`D:\saudi-sta-slice02-stt-recording15.json`.
+`${EVIDENCE_ROOT}/saudi-sta-slice02-stt-recording15.json`.

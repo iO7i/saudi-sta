@@ -5,7 +5,7 @@ Preflight source: Hugging Face model API for `audarai/Audar-ASR-V1-Turbo`.
 - Repository: `audarai/Audar-ASR-V1-Turbo`
 - Revision: `371428bea487c7aec82b27dc21f8d4324002e98e`
 - License metadata: `other` (the repository card must be reviewed before redistribution or commercial use)
-- Destination root: `D:\models\audar\Audar-ASR-V1-Turbo\`
+- Destination root: `${MODEL_ROOT}/audar/Audar-ASR-V1-Turbo/`
 - Transfer budget: approximately 2,000,000,000 decimal bytes
 - Planned transfer: 1,924,208,768 bytes (1.924 GB / 1.792 GiB)
 - Scope: exactly the two pinned files below; no repository-wide download.

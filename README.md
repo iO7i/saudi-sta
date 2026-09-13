@@ -8,7 +8,7 @@ sandbox.
 For example, this request:
 
 ```text
-<REDACTED_PRIVATE_TRANSCRIPT>
+Example Arabic list request (private recording text omitted)
 ```
 
 produces:
@@ -18,8 +18,8 @@ produces:
   "status": "READY",
   "tool_name": "add_list_items",
   "arguments": {
-    "list_name": "المقاضي",
-    "items": ["البيض", "الحليب"]
+    "list_name": "<list>",
+    "items": ["<item-1>", "<item-2>"]
   }
 }
 ```
@@ -99,7 +99,7 @@ repository. A file appearing on disk does not automatically activate a route.
 | `AUDAR_TURBO_Q4_LOCAL_BRIDGE` | `transcribe` | Certified local Audar runtime; decoder SHA-256 `c55e3c28225ef6e9b56906a6463af62d34ed417803c45f3b7b20f463af2e8cf4`; BF16 projector SHA-256 `190459e806938175711779847eb62ea609cd78b8d2ec06fb96a94d69ab37a9be` |
 | `AUDAR_TURBO_Q8_LOCAL` | `transcribe` | Certified local Audar runtime; decoder SHA-256 `0a91ab40f6a30db06c4186e2f621f504f4625ba6058e639cc09f1cbefded10d2` |
 | `AUDAR_FLASH_Q8_LOCAL` | `transcribe` | Certified local Audar runtime; decoder SHA-256 `1b01c707fcf162ef8e844a89f0833bd0d005933342e0c37fa8da164497a9fb38`; projector SHA-256 `73f06fc82a009b4a9d6c825782a3676cb553402b3a5ecc27ae77a92caa6b7fa9` |
-| `QWEN38_27B_Q6_K_L` | `function_call` and direct action extraction | Certified for local chat and JSON emulation; `D:\Qwen3.8-27B-UD-Q6_K_L.gguf`, 24,193,919,904 bytes, SHA-256 `121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4` |
+| `QWEN38_27B_Q6_K_L` | `function_call` and direct action extraction | Certified for local chat and JSON emulation; `${MODEL_ROOT}/Qwen3.8-27B-UD-Q6_K_L.gguf`, 24,193,919,904 bytes, SHA-256 `121355b4c7422771da25adc74090e3c90138f77ce5c92d348687d47824ec80f4` |
 | Whisper Large v3 | `transcribe` | A prior local run exists, but the current Transformers binding is unavailable until Torch/Transformers is installed |
 
 Qwen runs with llama.cpp `b10909-a2878d30d` on CPU, reasoning disabled,

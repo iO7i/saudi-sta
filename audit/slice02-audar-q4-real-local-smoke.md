@@ -10,10 +10,10 @@ Date: 2026-09-11 (Asia/Riyadh)
 - Benchmark claim: `NOT_REFERENCE_PRECISION`
 - Repository: `audarai/Audar-ASR-V1-Turbo`
 - Pinned revision: `371428bea487c7aec82b27dc21f8d4324002e98e`
-- Decoder: `D:\models\audar\Audar-ASR-V1-Turbo\Audar-ASR-V1-Turbo-Q4_K_M.gguf`
+- Decoder: `${MODEL_ROOT}/audar/Audar-ASR-V1-Turbo/Audar-ASR-V1-Turbo-Q4_K_M.gguf`
 - Decoder bytes: `1,282,434,912`
 - Decoder SHA-256: `c55e3c28225ef6e9b56906a6463af62d34ed417803c45f3b7b20f463af2e8cf4`
-- Projector: `D:\models\audar\Audar-ASR-V1-Turbo\mmproj-Audar-ASR-V1-Turbo.gguf`
+- Projector: `${MODEL_ROOT}/audar/Audar-ASR-V1-Turbo/mmproj-Audar-ASR-V1-Turbo.gguf`
 - Projector bytes: `641,773,856`
 - Projector SHA-256: `190459e806938175711779847eb62ea609cd78b8d2ec06fb96a94d69ab37a9be`
 - Model-weight license identifier: `audarai-community-license-v1.0` (the model card describes research and limited commercial use for qualifying Community Entities; local legal gates remain `UNKNOWN` until reviewed for this repository).
@@ -22,12 +22,12 @@ Date: 2026-09-11 (Asia/Riyadh)
 
 ## Same-audio comparison input
 
-- Audio: existing local `D:\models\whisper\FusHa.wav` (the same input used for the verified Whisper smoke).
+- Audio: existing local `${MODEL_ROOT}/whisper/FusHa.wav` (the same input used for the verified Whisper smoke).
 - Human reference: not yet recorded; this is a real local smoke input, not a human-scored benchmark case.
 
 ## Output and timing
 
-- Audar output: `<REDACTED_PRIVATE_TRANSCRIPT>`
+- Audar output: private transcript redacted from the public note
 - Native segments/timestamps: unavailable from this CLI path and therefore stored as an empty list.
 - Native confidence/no-speech signals: unavailable and therefore `null`/unavailable.
 - End-to-end wall time observed by the CLI invocation: approximately 2.5 seconds (including local model initialization and one audio encoding batch); the provider adapter records precise wall time per run.
@@ -35,4 +35,7 @@ Date: 2026-09-11 (Asia/Riyadh)
 
 ## Comparison note
 
-Whisper's earlier output on this same file was `<REDACTED_PRIVATE_TRANSCRIPT>` with one 0.00–3.82 second segment. Audar preserved the same words and added terminal punctuation. With no human reference and one utterance, the result is `INSUFFICIENT_HUMAN_EVIDENCE`, not a universal model ranking.
+Whisper's earlier output on this same file is retained in the private run
+record. Audar preserved the same words and added terminal punctuation. With no
+human reference and one utterance, the result is
+`INSUFFICIENT_HUMAN_EVIDENCE`, not a universal model ranking.

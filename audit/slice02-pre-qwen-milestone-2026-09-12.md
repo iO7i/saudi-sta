@@ -30,10 +30,10 @@ adapters and tournament report.
 
 | Model | Runtime evidence | Shared real input | Result |
 |---|---|---|---|
-| Whisper Large v3 | Transformers CPU, pinned revision and two shard hashes in `audit/slice02-real-local-smoke.md` | `D:\models\whisper\FusHa.wav` | `<REDACTED_PRIVATE_TRANSCRIPT>`; cold load ~4,686 ms, inference ~12,733 ms |
-| Audar Turbo Q4 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-audar-q4-real-local-smoke.md` | same input | `<REDACTED_PRIVATE_TRANSCRIPT>`; ~2.5 s end-to-end smoke |
-| Audar Turbo Q8 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-stt-stage-tournament.md` | same input | `<REDACTED_PRIVATE_TRANSCRIPT>`; 5,635.41 ms measured wall time |
-| Audar Flash Q8 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-stt-stage-tournament.md` | same input | `<REDACTED_PRIVATE_TRANSCRIPT>` after native-prefix normalization; 6,650.47 ms measured wall time |
+| Whisper Large v3 | Transformers CPU, pinned revision and two shard hashes in `audit/slice02-real-local-smoke.md` | `${MODEL_ROOT}/whisper/FusHa.wav` | private transcript redacted; cold load ~4,686 ms, inference ~12,733 ms |
+| Audar Turbo Q4 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-audar-q4-real-local-smoke.md` | same input | private transcript redacted; ~2.5 s end-to-end smoke |
+| Audar Turbo Q8 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-stt-stage-tournament.md` | same input | private transcript redacted; 5,635.41 ms measured wall time |
+| Audar Flash Q8 | llama.cpp mtmd, decoder/projector hashes in `audit/slice02-stt-stage-tournament.md` | same input | private transcript redacted after native-prefix normalization; 6,650.47 ms measured wall time |
 
 FireRedVAD remains `RUNTIME_PENDING` because the required `cmvn.ark`
 artifacts/runtime module are unavailable; no speech boundaries were invented.

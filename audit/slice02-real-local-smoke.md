@@ -11,8 +11,8 @@ Recorded 2026-09-11 after the missing Whisper shard was downloaded and verified.
 - Artifacts: two verified safetensors shards, 4,993,448,880 B and 1,180,663,192 B
 - First shard SHA-256: `08e0005225b3dbaf55dd13ac62926cc7e02c1025d66fa375e6fb305ff79cd4f9`
 - Second shard SHA-256: `630ca774672856d2e0e39a702e590f635a1cfc5726a64b6578ab46dd367369a9`
-- Audio: local `D:\models\whisper\FusHa.wav`; provenance is not a user-reviewed Saudi seed case
-- Output: `<REDACTED_PRIVATE_TRANSCRIPT>`
+- Audio: local `${MODEL_ROOT}/whisper/FusHa.wav`; provenance is not a user-reviewed Saudi seed case
+- Output: private transcript redacted from the public note
 - Segments: one returned segment, 0.00–3.82 seconds
 - Cold model load: approximately 4,686 ms
 - Inference latency: approximately 12,733 ms

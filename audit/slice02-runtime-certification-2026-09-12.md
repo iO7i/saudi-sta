@@ -7,7 +7,7 @@ representative Saudi benchmark and does not claim a general quality winner.
 
 ## Freshness gate
 
-- Repository: `<PRIVATE_WORKSPACE>`
+- Repository: private workspace path redacted from the public note
 - Checkout: `main`, not detached.
 - Fetch attempt: completed with exit code 0, but the repository has no Git
   remote configured and no remote-tracking default branch was available.
@@ -38,7 +38,7 @@ load.  The three optional stages remain unavailable for route selection.
 
 ## STT evidence
 
-The same local `D:\models\whisper\FusHa.wav` was already measured in
+The same local `${MODEL_ROOT}/whisper/FusHa.wav` was already measured in
 `audit/slice02-stt-stage-tournament.md` with Whisper Large v3, Audar Turbo Q4,
 Audar Turbo Q8, and Audar Flash Q8.  The three Audar candidates produced the
 same observed transcript for that one clip; Whisper produced the same words
