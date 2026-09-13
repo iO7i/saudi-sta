@@ -28,8 +28,6 @@ The proposal can be previewed and applied to the sandbox. Applying it again
 returns `ALREADY_APPLIED`. If the transcript is edited, the old proposal is
 rejected as stale.
 
-Maintainer: iO7i
-
 ## Run the workbench
 
 Create or activate the Python environment used by the repository, then start
