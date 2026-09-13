@@ -50,6 +50,14 @@ missing note content; Recording (7) contains mixed list/note wording and an
 unresolved “do this” phrase. This validates the real route and clarification
 behavior, but still does not provide an Apply-eligible proposal.
 
+Recording 13 was then attempted with the explicit list phrase. An initial
+prompt-tightened Qwen run exceeded the bounded harness ceiling and was
+cancelled. The cancelled short-lived harness left one confirmed Qwen child
+orphaned (PID 44368); that exact pinned process was terminated. The local
+subprocess adapters now register interpreter-exit child-tree cleanup in
+addition to their normal cancellation/timeout kill path, preventing this
+harness-exit orphan case from being silently retained.
+
 ## Exact next input needed
 
 Record one natural utterance that directly requests a supported local

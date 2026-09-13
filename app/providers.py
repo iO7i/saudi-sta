@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import importlib.util
 import inspect
@@ -33,6 +34,27 @@ OFFICIAL_SOURCES = {
 
 class LocalModelUnavailable(RuntimeError):
     pass
+
+
+def _terminate_child_tree(process: Any) -> None:
+    """Terminate one model child tree if it is still alive.
+
+    Registered at interpreter exit as well as used by timeout/cancel paths so
+    a short-lived API harness cannot orphan a multi-gigabyte local inference
+    process after its daemon worker disappears.
+    """
+    try:
+        if process.poll() is not None:
+            return
+    except Exception:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+    else:
+        try:
+            process.kill()
+        except Exception:
+            pass
 
 
 def _cleanup_temp_path(path: Path) -> None:
@@ -618,6 +640,7 @@ class AudarMtmdAdapter:
         started = time.perf_counter()
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=False,
                                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+        atexit.register(_terminate_child_tree, process)
         try:
             deadline = time.monotonic() + float(timeout_seconds or entry.get("timeout_seconds", 180))
             while process.poll() is None:
@@ -629,10 +652,7 @@ class AudarMtmdAdapter:
             raw, _stderr = process.communicate()
             return_code = process.returncode
         except (subprocess.TimeoutExpired, LocalModelUnavailable) as exc:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
-            else:
-                process.kill()
+            _terminate_child_tree(process)
             process.communicate()
             if isinstance(exc, subprocess.TimeoutExpired):
                 raise LocalModelUnavailable("LOCAL_AUDAR_TIMEOUT") from exc
@@ -696,7 +716,7 @@ class LlamaCppAdapter:
                 bindings.append(RoleBinding(
                     id=f"{self.provider}:{entry['id']}:{role.value}", provider=self.provider, model_id=str(entry["id"]),
                     revision_or_digest=f"{entry.get('revision') or entry.get('digest') or 'unknown'};{entry.get('artifacts', [{}])[0].get('sha256', 'unknown')}", role=role,
-                    prompt_version="qwen-json-v1", schema_version="sta-v2",
+                    prompt_version="qwen-json-v2", schema_version="sta-v2",
                     generation={"temperature": 0, "seed": 7, "max_tokens": int(entry.get("max_tokens", 160)), "runtime": entry.get("runtime", "llama.cpp-cli"), "quantization": entry.get("quantization") or entry.get("precision")},
                     execution_mode=ExecutionMode.LOCAL,
                     capability_provenance=CapabilityProvenance.VERIFIED_LOCAL if status["available"] else CapabilityProvenance.UNKNOWN,
@@ -830,6 +850,7 @@ class LlamaCppAdapter:
         started = time.perf_counter()
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", shell=False,
                                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+        atexit.register(_terminate_child_tree, process)
         deadline = time.monotonic() + float(timeout_seconds or entry.get("timeout_seconds", 600))
         try:
             while process.poll() is None:
@@ -840,10 +861,7 @@ class LlamaCppAdapter:
                 time.sleep(0.2)
             stdout, stderr = process.communicate()
         except (subprocess.TimeoutExpired, LocalModelUnavailable) as exc:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
-            else:
-                process.kill()
+            _terminate_child_tree(process)
             process.communicate()
             if isinstance(exc, subprocess.TimeoutExpired):
                 raise LocalModelUnavailable("LOCAL_GGUF_TIMEOUT") from exc

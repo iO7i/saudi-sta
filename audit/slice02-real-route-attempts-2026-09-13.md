@@ -97,3 +97,16 @@ Recording (7) produced a strict, schema-valid clarification asking for
 was Apply-eligible, so sandbox state was intentionally unchanged. Qwen's raw
 responses, artifact hash, runtime, and stage latencies are retained in the
 local SQLite route records under the configured runtime data directory.
+
+## Recording 13
+
+`Recording (13).m4a` was added with the intended list phrase (`أضف حليب وبيض
+إلى قائمة المقاضي`). The local file is 162,635 bytes, 6.357479 seconds, and
+SHA-256 `c6a175bb1b4947624ab14d0c4a72d69c14518443f9150da83875b1b952e56ff7`.
+The first Qwen run reached the model but returned the out-of-contract status
+`OK`; strict validation rejected it. The prompt was then versioned to
+`qwen-json-v2` with the exact allowed status enum spelled out. A second bounded
+attempt exceeded the 330-second harness ceiling and was explicitly cancelled;
+it produced no ToolProposal and no sandbox mutation. The confirmed orphaned
+Qwen child from that short-lived harness was terminated, and exit-time child
+cleanup was added to the adapters.
