@@ -110,3 +110,9 @@ attempt exceeded the 330-second harness ceiling and was explicitly cancelled;
 it produced no ToolProposal and no sandbox mutation. The confirmed orphaned
 Qwen child from that short-lived harness was terminated, and exit-time child
 cleanup was added to the adapters.
+
+The same audio was independently transcribed by all three certified Audar
+variants: Q4 and Q8 returned `<REDACTED_PRIVATE_TRANSCRIPT>`, while Flash
+returned `<REDACTED_PRIVATE_TRANSCRIPT>`. The item words were preserved, but
+the shopping-list word was not. This disagreement is retained as an observed
+STT error; it is not normalized into `المقاضي` without a human reference.
